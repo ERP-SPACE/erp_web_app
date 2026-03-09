@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Box,
   Button,
@@ -23,7 +23,6 @@ import {
 } from "@mui/material";
 import { DatePicker } from "@mui/x-date-pickers";
 import {
-  Visibility as ViewIcon,
   AccountBalance as BalanceIcon,
   TrendingUp as DebitIcon,
   TrendingDown as CreditIcon,
@@ -45,11 +44,7 @@ const Ledgers = () => {
     endDate: null,
   });
 
-  useEffect(() => {
-    fetchLedgers();
-  }, []);
-
-  const fetchLedgers = async () => {
+  const fetchLedgers = useCallback(async () => {
     setLoading(true);
     try {
       const response = await accountingService.getLedgers();
@@ -59,7 +54,11 @@ const Ledgers = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [showNotification, setLoading]);
+
+  useEffect(() => {
+    fetchLedgers();
+  }, [fetchLedgers]);
 
   const handleView = async (row) => {
     setSelectedLedger(row);
@@ -164,9 +163,7 @@ const Ledgers = () => {
         maxWidth="lg"
         fullWidth
       >
-        <DialogTitle>
-          Ledger Statement - {selectedLedger?.name}
-        </DialogTitle>
+        <DialogTitle>Ledger Statement - {selectedLedger?.name}</DialogTitle>
         <DialogContent>
           {selectedLedger && (
             <Box>

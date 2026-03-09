@@ -256,6 +256,79 @@ const masterService = {
     return res;
   },
 
+  // Supplier Base Rates
+  getSupplierBaseRates: async (supplierId) => {
+    const res = await api.get(`/suppliers/${supplierId}/base-rates`);
+    return res.data || [];
+  },
+
+  upsertSupplierBaseRate: async (supplierId, skuId, rate) => {
+    const res = await api.post(`/suppliers/${supplierId}/base-rates`, {
+      skuId,
+      rate,
+    });
+    return res.data || res;
+  },
+
+  deleteSupplierBaseRate: async (supplierId, baseRateId) => {
+    const res = await api.delete(
+      `/suppliers/${supplierId}/base-rates/${baseRateId}`
+    );
+    return res.data || res;
+  },
+
+  bulkUpsertSupplierBaseRates: async (supplierId, rates) => {
+    const res = await api.post(`/suppliers/${supplierId}/base-rates/bulk`, {
+      rates,
+    });
+    return res.data || res;
+  },
+
+  getSupplierBaseRateHistory: async (supplierId, baseRateId) => {
+    const res = await api.get(
+      `/suppliers/${supplierId}/base-rates/${baseRateId}/history`
+    );
+    return res.data || [];
+  },
+
+  getAllSupplierRateHistory: async (supplierId) => {
+    const res = await api.get(`/suppliers/${supplierId}/rate-history`);
+    return res.data || [];
+  },
+
+  // Supplier Contact Persons
+  getSupplierContactPersons: async (supplierId) => {
+    const res = await api.get(`/suppliers/${supplierId}/contact-persons`);
+    return res.data || [];
+  },
+
+  createSupplierContactPerson: async (supplierId, data) => {
+    const res = await api.post(`/suppliers/${supplierId}/contact-persons`, data);
+    return res.data || res;
+  },
+
+  updateSupplierContactPerson: async (supplierId, contactPersonId, data) => {
+    const res = await api.patch(
+      `/suppliers/${supplierId}/contact-persons/${contactPersonId}`,
+      data
+    );
+    return res.data || res;
+  },
+
+  deleteSupplierContactPerson: async (supplierId, contactPersonId) => {
+    const res = await api.delete(
+      `/suppliers/${supplierId}/contact-persons/${contactPersonId}`
+    );
+    return res.data || res;
+  },
+
+  setSupplierContactPersonPrimary: async (supplierId, contactPersonId) => {
+    const res = await api.patch(
+      `/suppliers/${supplierId}/contact-persons/${contactPersonId}/set-primary`
+    );
+    return res.data || res;
+  },
+
   // Customers
   getCustomers: async (params = {}) => {
     const res = await api.get("/customers", { params });

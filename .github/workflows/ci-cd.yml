@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      REACT_APP_STAGE_API_URL: ${{ vars.REACT_APP_STAGE_API_URL }}
+      REACT_APP_API_URL: ${{ vars.REACT_APP_STAGE_API_URL }}
       REACT_APP_COMPANY_NAME: ${{ vars.REACT_APP_COMPANY_NAME }}
       REACT_APP_TOKENS_PREFIX: "STAGE"
 
@@ -63,8 +63,9 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      REACT_APP_API_URL: ${{ vars.REACT_APP_PRODUCTION_API_URL }}
+      REACT_APP_COMPANY_NAME: ${{ vars.REACT_APP_COMPANY_NAME }}
       REACT_APP_TOKENS_PREFIX: "PRODUCTION"
-      REACT_APP_COMPANY_NAME: ${{ vars.REACT_APP_COMPANY_MASTER_URL }}
 
     steps:
       - name: Checkout code
@@ -86,6 +87,9 @@ jobs:
         run: |
           export NODE_OPTIONS="--max_old_space_size=5220"
           npm install --legacy-peer-deps 
+
+      - name: Build production app
+        run: CI=false npm run build
 
       - name: Build production app
         run: CI=false npm run build
