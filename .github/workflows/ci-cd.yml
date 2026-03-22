@@ -97,3 +97,5 @@ jobs:
         run: |
           aws s3 sync build ${{ vars.PROD_S3_BUCKET_URI }}
           aws cloudfront create-invalidation --distribution-id ${{ vars.PROD_CLOUDFRONT_DISTRIBUTION_ID }} --paths '/*'
+
+          
