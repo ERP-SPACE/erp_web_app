@@ -98,7 +98,9 @@ const inventoryService = {
 
   // Stock Movement History
   getStockMovement: async (params = {}) => {
-    const res = await api.get("/inventory/stock-movement", { params });
+    // erp_api currently doesn't expose `/inventory/stock-movement`.
+    // Route `/reports` exists (placeholder) under `/api/v1/reports`.
+    const res = await api.get("/reports", { params });
     return res.data || [];
   },
 

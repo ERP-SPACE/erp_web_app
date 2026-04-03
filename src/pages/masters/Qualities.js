@@ -245,7 +245,7 @@ const Qualities = () => {
                     <TableRow>
                       <TableCell>Name</TableCell>
                       <TableCell>Status</TableCell>
-                      <TableCell align="right">Actions</TableCell>
+                      <TableCell>Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -275,12 +275,13 @@ const Qualities = () => {
                             >
                               <IconButton
                                 size="small"
+                                color={quality.active ? "success" : "error"}
                                 onClick={() => handleToggleStatus(quality)}
                               >
                                 {quality.active ? (
-                                  <ToggleOff fontSize="small" />
-                                ) : (
                                   <ToggleOn fontSize="small" />
+                                ) : (
+                                  <ToggleOff fontSize="small" />
                                 )}
                               </IconButton>
                             </Tooltip>

@@ -355,8 +355,10 @@ const masterService = {
   },
 
   updateCreditPolicy: async (id, creditPolicy) => {
-    const res = await api.patch(`/customers/${id}/credit-policy`, creditPolicy);
-    return res.data;
+    // erp_api does not expose `/customers/:id/credit-policy`.
+    // Credit policy is updated via the main customer PATCH endpoint.
+    const res = await api.patch(`/customers/${id}`, { creditPolicy });
+    return res.data || res;
   },
 
   checkCredit: async (id) => {

@@ -274,7 +274,7 @@ const GSMs = () => {
                       <TableCell>Name</TableCell>
                       <TableCell>Value</TableCell>
                       <TableCell>Status</TableCell>
-                      <TableCell align="right">Actions</TableCell>
+                      <TableCell>Actions</TableCell>
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -305,12 +305,13 @@ const GSMs = () => {
                             >
                               <IconButton
                                 size="small"
+                                color={gsm.active ? "success" : "error"}
                                 onClick={() => handleToggleStatus(gsm)}
                               >
                                 {gsm.active ? (
-                                  <ToggleOff fontSize="small" />
-                                ) : (
                                   <ToggleOn fontSize="small" />
+                                ) : (
+                                  <ToggleOff fontSize="small" />
                                 )}
                               </IconButton>
                             </Tooltip>
