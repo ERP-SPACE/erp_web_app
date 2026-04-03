@@ -30,6 +30,8 @@ const Vouchers = lazy(() => import("../pages/accounting/Vouchers"));
 const Ledgers = lazy(() => import("../pages/accounting/Ledgers"));
 const Login = lazy(() => import("../pages/auth/Login"));
 const Register = lazy(() => import("../pages/auth/Register"));
+const Profile = lazy(() => import("../pages/profile/Profile"));
+const Settings = lazy(() => import("../pages/settings/Settings"));
 // const TrialBalance = lazy(() => import("../pages/reports/TrialBalance"));
 // const ProfitLoss = lazy(() => import("../pages/reports/ProfitLoss"));
 // const BalanceSheet = lazy(() => import("../pages/reports/BalanceSheet"));
@@ -73,6 +75,9 @@ const AppRoutes = () => {
           <Route path="payments" element={<Payments />} />
           <Route path="vouchers" element={<Vouchers />} />
           <Route path="ledgers" element={<Ledgers />} />
+
+          <Route path="profile" element={<Profile />} />
+          <Route path="settings" element={<Settings />} />
 
           {/* <Route path="reports">
             <Route path="trial-balance" element={<TrialBalance />} />

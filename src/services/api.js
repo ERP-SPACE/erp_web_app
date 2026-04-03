@@ -1,7 +1,14 @@
 // src/services/api.js
 import axios from "axios";
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'https://stage.backend.livesocial.in/api/v1';
+const API_BASE_URL = process.env.REACT_APP_API_URL;
+
+if (!API_BASE_URL) {
+  console.error(
+    "[api.js] REACT_APP_API_URL is not set. " +
+    "Create a .env.development (for npm start) or .env.production (for npm run build) file."
+  );
+}
 
 const api = axios.create({
   baseURL: API_BASE_URL,

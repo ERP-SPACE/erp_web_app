@@ -61,6 +61,24 @@ export const AuthProvider = ({ children }) => {
     showNotification("Logged out", "info");
   }, [showNotification]);
 
+  const updateProfile = useCallback(
+    async (payload) => {
+      const res = await authService.updateProfile(payload);
+      setUser(res.user || res);
+      showNotification("Profile updated successfully", "success");
+      return res;
+    },
+    [showNotification]
+  );
+
+  const changePassword = useCallback(
+    async (payload) => {
+      await authService.changePassword(payload);
+      showNotification("Password changed successfully", "success");
+    },
+    [showNotification]
+  );
+
   const value = {
     user,
     token,
@@ -68,6 +86,8 @@ export const AuthProvider = ({ children }) => {
     register,
     login,
     logout,
+    updateProfile,
+    changePassword,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
