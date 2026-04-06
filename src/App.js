@@ -4,11 +4,13 @@ import { ThemeProvider, createTheme } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
 import { LocalizationProvider } from "@mui/x-date-pickers";
 import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
-import { SnackbarProvider } from "notistack";
+import { SnackbarProvider, closeSnackbar } from "notistack";
 import { AppProvider } from "./contexts/AppContext";
 import { AuthProvider } from "./contexts/AuthContext";
 import AppRoutes from "./routes/AppRoutes";
 import ErrorBoundary from "./components/common/ErrorBoundary";
+import { IconButton } from "@mui/material";
+import { Close } from "@mui/icons-material";
 
 const theme = createTheme({
   palette: {
@@ -277,6 +279,11 @@ function App() {
             horizontal: "right",
           }}
           autoHideDuration={3000}
+          action={(key) => (
+            <IconButton onClick={() => closeSnackbar(key)}>
+              <Close sx={{ color: "#fff" }} />
+            </IconButton>
+          )}
         >
           <BrowserRouter>
             <AppProvider>
