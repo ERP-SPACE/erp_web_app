@@ -157,39 +157,60 @@ const PurchaseInvoices = () => {
     []
   );
 
+  // Normalise to the canonical per-roll format [{ lengthMeters }].
+  // Accepts both the UI dialog format { rollQty, metersPerRoll } (expands N times)
+  // and the stored per-roll format { lengthMeters } (passes through).
   const normalizeRollDetails = useCallback((details = []) => {
     if (!Array.isArray(details)) return [];
-    return details
-      .map((detail = {}) => ({
-        rollQty: Number(detail.rollQty) || 0,
-        metersPerRoll: Number(detail.metersPerRoll) || 0,
-      }))
-      .filter((detail) => detail.rollQty > 0 && detail.metersPerRoll > 0);
+    const expanded = [];
+    for (const detail of details) {
+      if (!detail) continue;
+      if (detail.lengthMeters !== undefined) {
+        const len = Number(detail.lengthMeters) || 0;
+        if (len > 0) expanded.push({ lengthMeters: len });
+      } else if (
+        detail.rollQty !== undefined ||
+        detail.metersPerRoll !== undefined
+      ) {
+        const qty = Math.max(Math.round(Number(detail.rollQty) || 0), 0);
+        const mpr = Number(detail.metersPerRoll) || 0;
+        if (qty > 0 && mpr > 0) {
+          for (let i = 0; i < qty; i++) expanded.push({ lengthMeters: mpr });
+        }
+      }
+    }
+    return expanded;
+  }, []);
+
+  // Collapse individual rolls [{ lengthMeters }] into groups [{ rollQty, metersPerRoll }]
+  // for display inside the Roll Details dialog (avoids showing 50 identical rows).
+  const collapseRollsToGroups = useCallback((individualRolls = []) => {
+    if (!Array.isArray(individualRolls) || !individualRolls.length) return [];
+    const groups = new Map();
+    for (const r of individualRolls) {
+      if (!r) continue;
+      // Handle both stored { lengthMeters } and already-grouped entries
+      const len =
+        r.lengthMeters !== undefined
+          ? Number(r.lengthMeters) || 0
+          : Number(r.metersPerRoll) || 0;
+      const qty =
+        r.lengthMeters !== undefined ? 1 : Number(r.rollQty) || 1;
+      if (!len) continue;
+      if (groups.has(len)) groups.get(len).rollQty += qty;
+      else groups.set(len, { rollQty: qty, metersPerRoll: len });
+    }
+    return Array.from(groups.values());
   }, []);
 
   const summarizeRollDetails = useCallback(
     (details = []) => {
+      // normalizeRollDetails handles both grouped and individual formats
       const normalized = normalizeRollDetails(details);
-      const totals = normalized.reduce(
-        (acc, detail) => {
-          acc.totalRolls += Number(detail.rollQty) || 0;
-          acc.totalMeters +=
-            (Number(detail.rollQty) || 0) *
-            (Number(detail.metersPerRoll) || 0);
-          return acc;
-        },
-        { totalRolls: 0, totalMeters: 0 }
-      );
-      const avgMetersPerRoll =
-        totals.totalRolls > 0
-          ? (Number(totals.totalMeters) || 0) / totals.totalRolls
-          : 0;
-      return {
-        normalized,
-        totalRolls: totals.totalRolls,
-        totalMeters: totals.totalMeters,
-        avgMetersPerRoll,
-      };
+      const totalRolls = normalized.length;
+      const totalMeters = normalized.reduce((s, r) => s + r.lengthMeters, 0);
+      const avgMetersPerRoll = totalRolls > 0 ? totalMeters / totalRolls : 0;
+      return { normalized, totalRolls, totalMeters, avgMetersPerRoll };
     },
     [normalizeRollDetails]
   );
@@ -605,9 +626,13 @@ const PurchaseInvoices = () => {
     const existingDetails =
       pending.rollDetails || line.rollDetails || line.pendingRollDetails || [];
     const baseMeters = Number(line.lengthMetersPerRoll) || 0;
+
+    // Existing details may be in the new per-roll format [{ lengthMeters }].
+    // Collapse to groups [{ rollQty, metersPerRoll }] for a compact dialog UI.
+    const collapsed = collapseRollsToGroups(existingDetails);
     const seedRows =
-      existingDetails.length > 0
-        ? existingDetails
+      collapsed.length > 0
+        ? collapsed
         : [
             {
               rollQty:
@@ -676,12 +701,15 @@ const PurchaseInvoices = () => {
       closeRollDetailsDialog();
       return;
     }
+    // rows are in { rollQty, metersPerRoll } grouped format (from the dialog UI).
+    // normalizeRollDetails expands them to individual [{ lengthMeters }] entries —
+    // the canonical stored format where each entry = one physical roll.
     const summary = summarizeRollDetails(rows);
     setPendingLineValues((prev) => ({
       ...prev,
       [line.poLineId]: {
         ...(prev[line.poLineId] || {}),
-        rollDetails: summary.normalized,
+        rollDetails: summary.normalized, // [{ lengthMeters }] — one entry per roll
         inwardRolls: summary.totalRolls,
         inwardMeters: summary.totalMeters,
       },
@@ -865,7 +893,7 @@ const PurchaseInvoices = () => {
         hsnCode: data.hsnCode || "",
         sgst: data.sgst || 0,
         cgst: data.cgst || 0,
-        igst: data.igst || data.taxAmount || 0,
+        igst: data.igst ?? 0,
         gstMode: data.gstMode || "intra",
         date: data.date ? new Date(data.date) : new Date(),
         lines: data.lines || [],
@@ -987,12 +1015,27 @@ const PurchaseInvoices = () => {
         };
       });
 
+      // Drop manual lines that were added by mistake with no meaningful data entered.
+      // A line is considered empty when it has no SKU, no meters, and no rolls.
+      const filteredLines = normalizedLines.filter((line) => {
+        const isManualLine =
+          (!line.poId && line.poNumber === "Manual") ||
+          line.poLineId?.toString().startsWith("manual-");
+        if (!isManualLine) return true; // always keep PO-linked lines
+        const hasData =
+          !!line.skuId ||
+          line.inwardMeters > 0 ||
+          line.inwardRolls > 0 ||
+          (Array.isArray(line.rollDetails) && line.rollDetails.length > 0);
+        return hasData;
+      });
+
       const invoiceData = {
         ...data,
         ...totals,
         purchaseOrderId: primaryPurchaseOrderId,
         supplierName: supplierInfo.name || data.supplierName || "",
-        lines: normalizedLines,
+        lines: filteredLines,
       };
 
       if (selectedInvoice) {
@@ -1990,11 +2033,55 @@ const PurchaseInvoices = () => {
               </Button>
               {(() => {
                 const summary = summarizeRollDetails(rollDetailsDialog.rows);
+                const maxRolls = Number(rollDetailsDialog.line?.qtyRolls) || 0;
+                const maxMeters =
+                  maxRolls *
+                  (Number(rollDetailsDialog.line?.lengthMetersPerRoll) || 0);
+                const rollsOver =
+                  maxRolls > 0 && summary.totalRolls > maxRolls;
+                const metersOver =
+                  maxMeters > 0 && summary.totalMeters > maxMeters;
+                const hasError = rollsOver || metersOver;
                 return (
-                  <Typography variant="body2" color="text.secondary">
-                    Total Rolls: {summary.totalRolls || 0} | Total Meters:{" "}
-                    {summary.totalMeters || 0}
-                  </Typography>
+                  <Box
+                    sx={{
+                      mt: 1,
+                      p: 1,
+                      borderRadius: 1,
+                      bgcolor: hasError ? "error.50" : "grey.50",
+                      border: "1px solid",
+                      borderColor: hasError ? "error.light" : "divider",
+                    }}
+                  >
+                    <Box
+                      sx={{ display: "flex", gap: 3, flexWrap: "wrap", mb: 0.5 }}
+                    >
+                      <Typography
+                        variant="body2"
+                        color={rollsOver ? "error" : "text.secondary"}
+                        fontWeight={rollsOver ? 600 : 400}
+                      >
+                        Rolls: {summary.totalRolls}
+                        {maxRolls > 0 && ` / ${maxRolls}`}
+                        {rollsOver && " ⚠ exceeds ordered"}
+                      </Typography>
+                      <Typography
+                        variant="body2"
+                        color={metersOver ? "error" : "text.secondary"}
+                        fontWeight={metersOver ? 600 : 400}
+                      >
+                        Meters: {summary.totalMeters}
+                        {maxMeters > 0 && ` / ${maxMeters}`}
+                        {metersOver && " ⚠ exceeds ordered"}
+                      </Typography>
+                    </Box>
+                    {hasError && (
+                      <Typography variant="caption" color="error">
+                        Total cannot exceed the ordered quantity. Adjust roll
+                        entries before saving.
+                      </Typography>
+                    )}
+                  </Box>
                 );
               })()}
             </Box>
@@ -2002,7 +2089,22 @@ const PurchaseInvoices = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={closeRollDetailsDialog}>Cancel</Button>
-          <Button variant="contained" onClick={saveRollDetails}>
+          <Button
+            variant="contained"
+            onClick={saveRollDetails}
+            disabled={(() => {
+              const summary = summarizeRollDetails(rollDetailsDialog.rows);
+              const maxRolls =
+                Number(rollDetailsDialog.line?.qtyRolls) || 0;
+              const maxMeters =
+                maxRolls *
+                (Number(rollDetailsDialog.line?.lengthMetersPerRoll) || 0);
+              return (
+                (maxRolls > 0 && summary.totalRolls > maxRolls) ||
+                (maxMeters > 0 && summary.totalMeters > maxMeters)
+              );
+            })()}
+          >
             Save
           </Button>
         </DialogActions>

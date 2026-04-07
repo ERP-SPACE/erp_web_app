@@ -394,7 +394,12 @@ const masterService = {
 
   setCustomerRate: async (customerId, rateData) => {
     const res = await api.post(`/customers/${customerId}/rates`, rateData);
-    return res.data;
+    return res.data || res;
+  },
+
+  deleteCustomerRate: async (customerId, skuId) => {
+    const res = await api.delete(`/customers/${customerId}/rates/${skuId}`);
+    return res.data || res;
   },
 
   bulkUpdateCustomerRates: async (customerId, rateUpdates) => {
@@ -404,9 +409,9 @@ const masterService = {
     return res.data;
   },
 
-  getCustomerRateHistory: async (customerId, productId = null, limit = 50) => {
+  getCustomerRateHistory: async (customerId, skuId = null, limit = 50) => {
     const params = { limit };
-    if (productId) params.productId = productId;
+    if (skuId) params.skuId = skuId;
     const res = await api.get(`/customers/${customerId}/rate-history`, {
       params,
     });

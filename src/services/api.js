@@ -36,14 +36,23 @@ api.interceptors.response.use(
     return response.data;
   },
   (error) => {
+    const status = error.response?.status;
     const message =
       error.response?.data?.error?.message || "Something went wrong";
     const code = error.response?.data?.error?.code || "ERROR";
 
+    // If the server says the token is invalid or expired, signal the app to
+    // log the user out. Auth endpoints are excluded to avoid redirect loops
+    // when credentials are simply wrong (also returns 401).
+    const isAuthEndpoint = error.config?.url?.startsWith("/auth/");
+    if ((status === 401 || status === 403) && !isAuthEndpoint) {
+      window.dispatchEvent(new CustomEvent("erp:auth:expired"));
+    }
+
     return Promise.reject({
       message,
       code,
-      status: error.response?.status,
+      status,
     });
   }
 );

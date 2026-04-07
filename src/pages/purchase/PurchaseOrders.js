@@ -20,6 +20,8 @@ import {
   Typography,
   Chip,
   Divider,
+  Stack,
+  Tooltip,
 } from "@mui/material";
 import { DatePicker } from "@mui/x-date-pickers";
 import {
@@ -29,6 +31,9 @@ import {
   CheckCircle as ApproveIcon,
   Cancel as CancelIcon,
   Print as PrintIcon,
+  Save as SaveIcon,
+  Close as CloseIcon,
+  Warning as WarningIcon,
 } from "@mui/icons-material";
 import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
@@ -63,6 +68,9 @@ const PurchaseOrders = () => {
   const [orders, setOrders] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [skus, setSKUs] = useState([]);
+  const [supplierBaseRates, setSupplierBaseRates] = useState([]);
+  const [addingRateForLine, setAddingRateForLine] = useState(null);
+  const [newRateValue, setNewRateValue] = useState("");
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
@@ -175,8 +183,44 @@ const PurchaseOrders = () => {
     }
   };
 
+  const fetchSupplierBaseRates = async (supplierId) => {
+    if (!supplierId) { setSupplierBaseRates([]); return; }
+    try {
+      const response = await masterService.getSupplierBaseRates(supplierId);
+      setSupplierBaseRates(response?.data || response || []);
+    } catch (error) {
+      console.error("Failed to fetch supplier base rates:", error);
+      setSupplierBaseRates([]);
+    }
+  };
+
+  const handleSaveSkuRate = async (lineIndex) => {
+    const supplierId = getValues("supplierId");
+    const skuId = getValues(`lines.${lineIndex}.skuId`);
+    if (!supplierId || !skuId) return;
+    const rate = Number(newRateValue);
+    if (!rate || rate <= 0) {
+      showNotification("Please enter a valid rate", "warning");
+      return;
+    }
+    try {
+      await masterService.upsertSupplierBaseRate(supplierId, skuId, rate);
+      showNotification("Supplier base rate saved successfully", "success");
+      await fetchSupplierBaseRates(supplierId);
+      // Auto-fill the line with the newly saved rate
+      setValue(`lines.${lineIndex}.ratePerRoll`, rate);
+      setAddingRateForLine(null);
+      setNewRateValue("");
+    } catch (err) {
+      showNotification(err?.message || "Failed to save rate", "error");
+    }
+  };
+
   const handleAdd = () => {
     setSelectedOrder(null);
+    setSupplierBaseRates([]);
+    setAddingRateForLine(null);
+    setNewRateValue("");
     reset({
       supplierId: "",
       date: new Date(),
@@ -201,10 +245,9 @@ const PurchaseOrders = () => {
   };
 
   const handleEdit = (row) => {
-    // if (row.status !== "Draft") {
-    //   showNotification("Can only edit draft orders", "warning");
-    //   return;
-    // }
+    setSupplierBaseRates([]);
+    setAddingRateForLine(null);
+    setNewRateValue("");
     const normalizedSupplierId =
       row.supplierId?._id ||
       row.supplierId ||
@@ -213,6 +256,7 @@ const PurchaseOrders = () => {
       "";
     const normalizedLines = (row.lines || []).map((line = {}) => ({
       ...line,
+      skuId: line.skuId?._id || line.skuId || "",
       lineStatus: line.lineStatus || line.status || "Pending",
     }));
     setSelectedOrder(row);
@@ -286,27 +330,22 @@ const PurchaseOrders = () => {
     };
   };
 
-  const getSupplierBaseRate = (supplierId, categoryId) => {
-    if (!supplierId || !categoryId) return undefined;
+  const getSupplierBaseRate = (supplierId, skuId) => {
+    if (!supplierId || !skuId) return undefined;
 
-    const supplier = suppliers?.find((sup) => sup._id === supplierId);
-    if (!supplier) return undefined;
-
-    const matchedRate = (supplier.categoryRates || []).find((rate = {}) => {
-      const rateCategoryId =
-        rate.categoryId?._id || rate.categoryId || rate.category?._id || "";
-      return rateCategoryId?.toString() === categoryId?.toString();
+    const matched = supplierBaseRates.find((br) => {
+      const brSkuId = br.skuId?._id?.toString() || br.skuId?.toString() || "";
+      return brSkuId === skuId.toString();
     });
 
-    if (!matchedRate || matchedRate.baseRate === undefined) return undefined;
-    return sanitizeNumber(matchedRate.baseRate);
+    if (!matched || matched.rate === undefined) return undefined;
+    return sanitizeNumber(matched.rate);
   };
 
   const applyBaseRateForLine = (index, sku, supplierId) => {
     if (!sku || !supplierId) return;
 
-    const meta = deriveProductMeta(sku);
-    const baseRate = getSupplierBaseRate(supplierId, meta.categoryId);
+    const baseRate = getSupplierBaseRate(supplierId, sku._id);
 
     if (baseRate === undefined) return;
 
@@ -322,7 +361,11 @@ const PurchaseOrders = () => {
   };
 
   useEffect(() => {
-    if (!selectedSupplierId) return;
+    fetchSupplierBaseRates(selectedSupplierId);
+  }, [selectedSupplierId]);
+
+  useEffect(() => {
+    if (!selectedSupplierId || !supplierBaseRates.length) return;
 
     const currentLines = getValues("lines") || [];
 
@@ -332,7 +375,7 @@ const PurchaseOrders = () => {
       if (!sku) return;
       applyBaseRateForLine(index, sku, selectedSupplierId);
     });
-  }, [selectedSupplierId, skus, getValues, setValue]);
+  }, [selectedSupplierId, supplierBaseRates, skus, getValues, setValue]);
 
   const handleSKUChange = (index, skuId) => {
     const sku = skus?.find((s) => s._id === skuId);
@@ -549,54 +592,109 @@ const PurchaseOrders = () => {
               justifyContent: "flex-start",
               gap: 2,
               paddingTop: "20px !important",
-              // padding: '40px',
             }}
           >
-            <Grid container spacing={2}>
-              <Grid item xs={12} md={6}>
-                <Controller
-                  name="supplierId"
-                  control={control}
-                  rules={{ required: "Supplier is required" }}
-                  render={({ field }) => (
-                    <TextField
-                      {...field}
-                      select
-                      fullWidth
-                      label="Supplier"
-                      error={!!errors.supplierId}
-                      helperText={errors.supplierId?.message}
-                    >
-                      {(suppliers || []).map((supplier) => (
-                        <MenuItem key={supplier._id} value={supplier._id}>
-                          {supplier.name}
-                        </MenuItem>
-                      ))}
-                    </TextField>
-                  )}
-                />
-              </Grid>
-
-              <Grid item xs={12} md={6}>
-                <Controller
-                  name="date"
-                  control={control}
-                  rules={{ required: "Date is required" }}
-                  render={({ field }) => (
-                    <DatePicker
-                      {...field}
-                      label="Order Date"
-                      renderInput={(params) => (
+            {/* ── Top section: Order Details + SKU Base Rates ── */}
+            <Grid container spacing={2} alignItems="stretch" sx={{ width: "100%" }}>
+              {/* Left: Supplier & Date */}
+              <Grid item xs={12} md={5}>
+                <Paper variant="outlined" sx={{ p: 2, height: "100%" }}>
+                  <Typography variant="caption" fontWeight={600} color="text.secondary"
+                    sx={{ textTransform: "uppercase", letterSpacing: 0.5, display: "block", mb: 1.5 }}>
+                    Order Details
+                  </Typography>
+                  <Stack spacing={2}>
+                    <Controller
+                      name="supplierId"
+                      control={control}
+                      rules={{ required: "Supplier is required" }}
+                      render={({ field }) => (
                         <TextField
-                          {...params}
+                          {...field}
+                          select
                           fullWidth
-                          error={!!errors.date}
-                          helperText={errors.date?.message}
+                          label="Supplier"
+                          error={!!errors.supplierId}
+                          helperText={errors.supplierId?.message}
+                        >
+                          {(suppliers || []).map((supplier) => (
+                            <MenuItem key={supplier._id} value={supplier._id}>
+                              {supplier.name}
+                            </MenuItem>
+                          ))}
+                        </TextField>
+                      )}
+                    />
+                    <Controller
+                      name="date"
+                      control={control}
+                      rules={{ required: "Date is required" }}
+                      render={({ field }) => (
+                        <DatePicker
+                          {...field}
+                          label="Order Date"
+                          renderInput={(params) => (
+                            <TextField
+                              {...params}
+                              fullWidth
+                              error={!!errors.date}
+                              helperText={errors.date?.message}
+                            />
+                          )}
                         />
                       )}
                     />
-                  )}
-                />
+                  </Stack>
+                </Paper>
+              </Grid>
+
+              {/* Right: SKU Base Rates for selected supplier */}
+              <Grid item xs={12} md={7}>
+                <Paper variant="outlined" sx={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                  <Box sx={{ px: 2, py: 1, bgcolor: "grey.50", borderBottom: "1px solid", borderColor: "divider" }}>
+                    <Typography variant="caption" fontWeight={600} color="text.secondary"
+                      sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}>
+                      SKU Base Rates
+                      {selectedSupplierId && (
+                        <Typography component="span" variant="caption" color="text.disabled" sx={{ ml: 1, fontWeight: 400 }}>
+                          — {suppliers.find(s => s._id === selectedSupplierId)?.name || ""}
+                        </Typography>
+                      )}
+                    </Typography>
+                  </Box>
+                  <TableContainer sx={{ flex: 1, maxHeight: 180, overflow: "auto" }}>
+                    <Table size="small" stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }}>SKU</TableCell>
+                          <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }} align="right">Base Rate</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {!selectedSupplierId ? (
+                          <TableRow>
+                            <TableCell colSpan={2} align="center" sx={{ color: "text.disabled", py: 2 }}>
+                              Select a supplier to view rates
+                            </TableCell>
+                          </TableRow>
+                        ) : supplierBaseRates.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={2} align="center" sx={{ color: "text.disabled", py: 2 }}>
+                              No SKU rates configured for this supplier
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          supplierBaseRates.map((br) => (
+                            <TableRow key={br._id} hover>
+                              <TableCell>{br.skuId?.skuCode || br.skuId?.skuAlias || "—"}</TableCell>
+                              <TableCell align="right">{formatCurrency(br.rate)}</TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Paper>
               </Grid>
             </Grid>
 
@@ -623,7 +721,20 @@ const PurchaseOrders = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {(fields || []).map((field, index) => (
+                  {(fields || []).map((field, index) => {
+                    const rawSkuId = watchLines?.[index]?.skuId;
+                    const lineSkuId = rawSkuId?._id?.toString() || rawSkuId?.toString() || "";
+                    const hasSkuSelected = !!lineSkuId;
+                    const supplierSelected = !!getValues("supplierId");
+                    const supplierRate = hasSkuSelected
+                      ? supplierBaseRates.find((br) => {
+                          const brId = br.skuId?._id?.toString() || br.skuId?.toString() || "";
+                          return brId === lineSkuId;
+                        })
+                      : null;
+                    const hasSupplierRate = !!supplierRate;
+
+                    return (
                     <TableRow key={field.id}>
                       <TableCell>
                         <Controller
@@ -635,9 +746,11 @@ const PurchaseOrders = () => {
                               select
                               size="small"
                               fullWidth
-                              onChange={(e) =>
-                                handleSKUChange(index, e.target.value)
-                              }
+                              onChange={(e) => {
+                                setAddingRateForLine(null);
+                                setNewRateValue("");
+                                handleSKUChange(index, e.target.value);
+                              }}
                             >
                               <MenuItem value="">Select SKU</MenuItem>
                               {(skus || []).map((sku) => (
@@ -685,20 +798,73 @@ const PurchaseOrders = () => {
                           )}
                         />
                       </TableCell>
-                      <TableCell>
-                        <Controller
-                          name={`lines.${index}.ratePerRoll`}
-                          control={control}
-                          render={({ field }) => (
-                            <NumericFormat
-                              {...field}
-                              customInput={TextField}
+
+                      {/* Base Rate: always editable when a SKU is selected.
+                          A warning icon appears when no supplier base rate exists;
+                          clicking it opens the inline flow to save a base rate. */}
+                      <TableCell sx={{ minWidth: 160 }}>
+                        {!hasSkuSelected ? (
+                          <Typography variant="body2" color="text.disabled">—</Typography>
+                        ) : addingRateForLine === index ? (
+                          <Stack direction="row" spacing={0.5} alignItems="center">
+                            <TextField
                               size="small"
-                              thousandSeparator=","
-                              decimalScale={2}
+                              type="number"
+                              value={newRateValue}
+                              onChange={(e) => setNewRateValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") handleSaveSkuRate(index);
+                                if (e.key === "Escape") { setAddingRateForLine(null); setNewRateValue(""); }
+                              }}
+                              autoFocus
+                              placeholder="Rate"
+                              sx={{ width: 90 }}
+                              inputProps={{ min: 0, step: "any" }}
                             />
-                          )}
-                        />
+                            <Tooltip title="Save as supplier base rate">
+                              <IconButton size="small" color="primary" onClick={() => handleSaveSkuRate(index)}>
+                                <SaveIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Cancel">
+                              <IconButton size="small" onClick={() => { setAddingRateForLine(null); setNewRateValue(""); }}>
+                                <CloseIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          </Stack>
+                        ) : (
+                          <Stack direction="row" spacing={0.5} alignItems="center">
+                            <Controller
+                              name={`lines.${index}.ratePerRoll`}
+                              control={control}
+                              render={({ field }) => (
+                                <NumericFormat
+                                  {...field}
+                                  customInput={TextField}
+                                  size="small"
+                                  thousandSeparator=","
+                                  decimalScale={2}
+                                  sx={{ width: 110 }}
+                                />
+                              )}
+                            />
+                            {!hasSupplierRate && (
+                              <Tooltip title="No supplier base rate — click to save current rate as base rate">
+                                <IconButton
+                                  size="small"
+                                  color="warning"
+                                  onClick={() => {
+                                    const currentRate = getValues(`lines.${index}.ratePerRoll`);
+                                    setNewRateValue(String(sanitizeNumber(currentRate) || ""));
+                                    setAddingRateForLine(index);
+                                  }}
+                                >
+                                  <WarningIcon sx={{ fontSize: 14 }} />
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                          </Stack>
+                        )}
                       </TableCell>
                       <TableCell>
                         <Controller
@@ -763,7 +929,8 @@ const PurchaseOrders = () => {
                         )}
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                   <TableRow sx={{ fontWeight: 600, bgcolor: "grey.100" }}>
                     <TableCell colSpan={8}>Totals</TableCell>
                     <TableCell>

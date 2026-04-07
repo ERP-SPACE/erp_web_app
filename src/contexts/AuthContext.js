@@ -55,11 +55,23 @@ export const AuthProvider = ({ children }) => {
     [handleAuthSuccess]
   );
 
-  const logout = useCallback(() => {
+  const logout = useCallback((message = "Logged out") => {
     setToken(null);
     setUser(null);
-    showNotification("Logged out", "info");
+    showNotification(message, "info");
   }, [showNotification]);
+
+  // When the API signals an expired/invalid token, force a logout so
+  // ProtectedRoute automatically redirects the user to /login.
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      logout("Session expired. Please log in again.");
+    };
+    window.addEventListener("erp:auth:expired", handleSessionExpired);
+    return () => {
+      window.removeEventListener("erp:auth:expired", handleSessionExpired);
+    };
+  }, [logout]);
 
   const updateProfile = useCallback(
     async (payload) => {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Box,
   Button,
@@ -22,6 +22,8 @@ import {
   Divider,
   Alert,
   Tooltip,
+  InputBase,
+  Stack,
 } from "@mui/material";
 import { DatePicker } from "@mui/x-date-pickers";
 import {
@@ -32,7 +34,11 @@ import {
   CreditCard as CreditCheckIcon,
   Calculate as CalculateIcon,
   Warning as WarningIcon,
+  Save as SaveIcon,
+  Close as CloseIcon,
+  CallSplit as BifurcateIcon,
 } from "@mui/icons-material";
+import LinearProgress from "@mui/material/LinearProgress";
 import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
 import DataTable from "../../components/common/DataTable";
@@ -53,10 +59,20 @@ const SalesOrders = () => {
   const [skus, setSKUs] = useState([]);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [openDialog, setOpenDialog] = useState(false);
+  const [viewMode, setViewMode] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
   const [creditCheckResult, setCreditCheckResult] = useState(null);
   const [showCreditDialog, setShowCreditDialog] = useState(false);
+  const [customerRates, setCustomerRates] = useState([]);
+  const [addingRateForLine, setAddingRateForLine] = useState(null);
+  const [newRateValue, setNewRateValue] = useState("");
+  const [bifurcationDialog, setBifurcationDialog] = useState({
+    open: false,
+    lineIndex: null,
+    targetMeters: 0,
+    groups: [],
+  });
 
   const {
     control,
@@ -83,6 +99,7 @@ const SalesOrders = () => {
         },
       ],
       discountPercent: 0,
+      dueDays: 0,
       notes: "",
     },
   });
@@ -91,6 +108,10 @@ const SalesOrders = () => {
     control,
     name: "lines",
   });
+
+  // Prevents the watchCustomerId effect from overriding dueDays when
+  // opening an existing order (edit / view) via reset()
+  const skipDueDaysAutoSetRef = useRef(false);
 
   const formatDisplayValue = useCallback((val) => {
     if (val === null || val === undefined) return "";
@@ -125,18 +146,20 @@ const SalesOrders = () => {
     return val || "";
   }, []);
 
-  const normalizeLine = useCallback(
-    (line = {}) => ({
-      ...line,
-      skuId: normalizeId(line.skuId),
-    }),
-    [normalizeId]
-  );
-
   const toNumber = useCallback((val) => {
     const num = Number(val);
     return Number.isFinite(num) ? num : 0;
   }, []);
+
+  const normalizeLine = useCallback(
+    (line = {}) => ({
+      ...line,
+      skuId: normalizeId(line.skuId),
+      totalMeters: (line.totalMeters != null ? line.totalMeters : null) ?? ((toNumber(line.lengthMetersPerRoll) * toNumber(line.qtyRolls)) || 0),
+      bifurcations: Array.isArray(line.bifurcations) ? line.bifurcations : [],
+    }),
+    [normalizeId, toNumber]
+  );
 
   const watchCustomerId = watch("customerId");
   const watchLines = watch("lines");
@@ -162,6 +185,14 @@ const SalesOrders = () => {
       const customer = customers.find((c) => c._id === watchCustomerId);
       setSelectedCustomer(customer);
       checkCustomerCredit(watchCustomerId);
+      fetchCustomerRates(watchCustomerId);
+      if (!skipDueDaysAutoSetRef.current) {
+        const days =
+          (customer?.creditPolicy?.creditDays || 0) +
+          (customer?.creditPolicy?.graceDays || 0);
+        setValue("dueDays", days);
+      }
+      skipDueDaysAutoSetRef.current = false;
     }
   }, [watchCustomerId, customers]);
 
@@ -188,7 +219,7 @@ const SalesOrders = () => {
 
   const fetchSKUs = async () => {
     try {
-      const response = await masterService.getSKUs({ active: true });
+      const response = await masterService.getSKUs({ active: true, limit: 1000 });
       setSKUs(response.skus || []);
     } catch (error) {
       console.error("Failed to fetch SKUs:", error);
@@ -207,18 +238,15 @@ const SalesOrders = () => {
     }
   };
 
-  // 44" Pricing Algorithm
-  const calculateDerivedRate = useCallback(
-    (baseRate44, targetWidth) => {
-      const base = toNumber(baseRate44);
-      const width = toNumber(targetWidth);
-      if (!base || !width) return 0;
-      const ratio = width / 44;
-      const derivedRate = base * ratio;
-      return Math.round(derivedRate);
-    },
-    [toNumber]
-  );
+  const fetchCustomerRates = async (customerId) => {
+    try {
+      const rates = await masterService.getCustomerRates(customerId);
+      setCustomerRates(Array.isArray(rates) ? rates : []);
+    } catch (error) {
+      console.error("Failed to fetch customer rates:", error);
+      setCustomerRates([]);
+    }
+  };
 
   const skuById = useMemo(() => {
     const map = {};
@@ -228,6 +256,60 @@ const SalesOrders = () => {
     return map;
   }, [skus]);
 
+  // Find the SKU-specific rate for a line directly by skuId.
+  const findRateForSku = useCallback(
+    (skuId) => {
+      const id = String(normalizeId(skuId) || "");
+      if (!id || !customerRates.length) return null;
+      return customerRates.find((r) => {
+        const rateSkuId = String(normalizeId(r.skuId?._id ?? r.skuId) || "");
+        return rateSkuId === id;
+      }) || null;
+    },
+    [customerRates, normalizeId]
+  );
+
+  const getLineBaseRate = useCallback(
+    (line) => {
+      const match = findRateForSku(line?.skuId);
+      if (match) return toNumber(match.baseRate);
+      return toNumber(selectedCustomer?.baseRate44);
+    },
+    [findRateForSku, toNumber, selectedCustomer]
+  );
+
+  // Returns the customerRate record for this line's SKU, or null.
+  const getSkuRateMatch = useCallback(
+    (line) => findRateForSku(line?.skuId),
+    [findRateForSku]
+  );
+
+  const handleSaveSkuRate = useCallback(
+    async (lineIndex) => {
+      const line = watchLines[lineIndex];
+      const skuId = normalizeId(line?.skuId);
+      if (!skuId || !selectedCustomer) return;
+      const rate = Number(newRateValue);
+      if (!rate || rate <= 0) {
+        showNotification("Please enter a valid rate", "warning");
+        return;
+      }
+      try {
+        await masterService.setCustomerRate(selectedCustomer._id, {
+          skuId,
+          baseRate: rate,
+        });
+        showNotification("Base rate added successfully", "success");
+        await fetchCustomerRates(selectedCustomer._id);
+        setAddingRateForLine(null);
+        setNewRateValue("");
+      } catch (err) {
+        showNotification(err?.message || "Failed to save rate", "error");
+      }
+    },
+    [watchLines, selectedCustomer, newRateValue, fetchCustomerRates, normalizeId, showNotification]
+  );
+
   const resolveTaxRate = useCallback(
     (line) => {
       const sku = skuById[normalizeId(line?.skuId)] || {};
@@ -236,51 +318,47 @@ const SalesOrders = () => {
     [skuById, normalizeId, normalizeTaxRate]
   );
 
-  // Calculate pricing for a single line
-  // Total Amount = Total Meters * Base Rate
+  // Calculate pricing for a single line.
+  // With SKU-based rates the baseRate is already width-specific — no further scaling needed.
   const calculateLinePrice = useCallback(
-    (line, baseRate44, discountPercent) => {
-      const baseRate = toNumber(baseRate44);
-      const totalMeters = toNumber(line?.lengthMetersPerRoll) * toNumber(line?.qtyRolls);
-      const lineTotal = totalMeters * baseRate;
+    (line, baseRate, discountPercent) => {
+      const rate = toNumber(baseRate);
+      // Use explicitly stored totalMeters (from direct input or bifurcation) when available
+      const totalMeters =
+        toNumber(line?.totalMeters) ||
+        toNumber(line?.lengthMetersPerRoll) * toNumber(line?.qtyRolls);
+      const lineTotal = totalMeters * rate;
 
-      // Keep derived rate calculation for display purposes
-      const derivedRate = calculateDerivedRate(baseRate44, line?.widthInches);
       const hasOverride =
         line?.overrideRatePerRoll !== null &&
         line?.overrideRatePerRoll !== undefined &&
         line?.overrideRatePerRoll !== "";
-      const finalRate = hasOverride
-        ? toNumber(line?.overrideRatePerRoll)
-        : derivedRate;
+      const finalRate = hasOverride ? toNumber(line?.overrideRatePerRoll) : rate;
 
       const taxRate = resolveTaxRate(line);
 
       return {
-        derivedRate,
+        derivedRate: rate,
         finalRate,
         taxRate,
         lineTotal,
       };
     },
-    [calculateDerivedRate, resolveTaxRate, toNumber]
+    [resolveTaxRate, toNumber]
   );
 
   const computeTotals = useCallback(
-    (lines = [], discountPercent = 0, baseRate44 = 0) => {
+    (lines = [], discountPercent = 0) => {
       let subtotal = 0;
-      let discountAmount = 0;
-      let taxAmount = 0;
-
-      const baseRate = toNumber(baseRate44);
+      const discountAmount = 0;
+      const taxAmount = 0;
 
       lines.forEach((line) => {
-        if (line?.lengthMetersPerRoll && line?.qtyRolls) {
-          // Total Amount = Total Meters * Base Rate
-          const totalMeters = toNumber(line?.lengthMetersPerRoll) * toNumber(line?.qtyRolls);
-          const lineTotal = totalMeters * baseRate;
-
-          subtotal += lineTotal;
+        const effectiveMeters =
+          toNumber(line?.totalMeters) ||
+          (toNumber(line?.lengthMetersPerRoll) * toNumber(line?.qtyRolls));
+        if (effectiveMeters > 0) {
+          subtotal += effectiveMeters * getLineBaseRate(line);
         }
       });
 
@@ -291,7 +369,7 @@ const SalesOrders = () => {
         total: subtotal,
       };
     },
-    [toNumber]
+    [toNumber, getLineBaseRate]
   );
 
   const [totals, setTotals] = useState({
@@ -303,27 +381,91 @@ const SalesOrders = () => {
 
   useEffect(() => {
     const subscription = watch((value) => {
-      const baseRate = selectedCustomer?.baseRate44 || 0;
-      setTotals(
-        computeTotals(value?.lines || [], value?.discountPercent, baseRate)
-      );
+      setTotals(computeTotals(value?.lines || [], value?.discountPercent));
     });
 
     return () => subscription.unsubscribe();
-  }, [watch, selectedCustomer, computeTotals]);
+  }, [watch, computeTotals]);
 
   useEffect(() => {
-    const baseRate = selectedCustomer?.baseRate44 || 0;
-    setTotals(computeTotals(watchLines, watchDiscountPercent, baseRate));
-  }, [selectedCustomer, watchLines, watchDiscountPercent, computeTotals]);
+    setTotals(computeTotals(watchLines, watchDiscountPercent));
+  }, [watchLines, watchDiscountPercent, computeTotals]);
+
+  const deriveSkuFields = useCallback(
+    (line) => {
+      const skuObj =
+        line.skuId && typeof line.skuId === "object"
+          ? line.skuId
+          : skuById[normalizeId(line.skuId)];
+      if (!skuObj) return {};
+      const product = skuObj.productId || skuObj.product;
+      return {
+        categoryName:
+          product?.categoryId?.name ||
+          product?.category?.name ||
+          skuObj.categoryName ||
+          "",
+        gsm:
+          product?.gsmId?.name ||
+          product?.gsmId?.value?.toString() ||
+          (typeof skuObj.gsm === "object"
+            ? skuObj.gsm?.name || skuObj.gsm?.value?.toString() || ""
+            : skuObj.gsm) ||
+          "",
+        qualityName:
+          product?.qualityId?.name ||
+          product?.quality?.name ||
+          skuObj.qualityName ||
+          "",
+        widthInches: skuObj.widthInches,
+      };
+    },
+    [skuById, normalizeId]
+  );
+
+  const handleView = (row) => {
+    setSelectedOrder(row);
+    setViewMode(true);
+    const customer = customers.find((c) => c._id === normalizeId(row.customerId));
+    setSelectedCustomer(customer || null);
+    setCreditCheckResult(null);
+    setCustomerRates([]);
+    fetchCustomerRates(normalizeId(row.customerId));
+    skipDueDaysAutoSetRef.current = true;
+    reset({
+      customerId: normalizeId(row.customerId),
+      date: new Date(row.date),
+      dueDays:
+        row.dueDays ??
+        (customer?.creditPolicy?.creditDays || 0) +
+          (customer?.creditPolicy?.graceDays || 0),
+      lines: (row.lines || []).map((line) => {
+        const derived = deriveSkuFields(line);
+        return normalizeLine({
+          ...line,
+          skuId: normalizeId(line.skuId),
+          categoryName: line.categoryName || derived.categoryName || "",
+          gsm: line.gsm || derived.gsm || "",
+          qualityName: line.qualityName || derived.qualityName || "",
+          widthInches: line.widthInches || derived.widthInches || "",
+        });
+      }),
+      discountPercent: row.discountPercent || 0,
+      notes: row.notes || "",
+    });
+    setOpenDialog(true);
+  };
 
   const handleAdd = () => {
     setSelectedOrder(null);
+    setViewMode(false);
     setSelectedCustomer(null);
     setCreditCheckResult(null);
+    setCustomerRates([]);
     reset({
       customerId: "",
       date: new Date(),
+      dueDays: 0,
       lines: [
         normalizeLine({
           skuId: "",
@@ -349,15 +491,29 @@ const SalesOrders = () => {
       return;
     }
     setSelectedOrder(row);
+    setViewMode(false);
+    setCustomerRates([]);
+    fetchCustomerRates(normalizeId(row.customerId));
+    skipDueDaysAutoSetRef.current = true;
+    const editCustomer = customers.find((c) => c._id === normalizeId(row.customerId));
     reset({
       customerId: normalizeId(row.customerId),
       date: new Date(row.date),
-      lines: (row.lines || []).map((line) =>
-        normalizeLine({
+      dueDays:
+        row.dueDays ??
+        (editCustomer?.creditPolicy?.creditDays || 0) +
+          (editCustomer?.creditPolicy?.graceDays || 0),
+      lines: (row.lines || []).map((line) => {
+        const derived = deriveSkuFields(line);
+        return normalizeLine({
           ...line,
           skuId: normalizeId(line.skuId),
-        })
-      ),
+          categoryName: line.categoryName || derived.categoryName || "",
+          gsm: line.gsm || derived.gsm || "",
+          qualityName: line.qualityName || derived.qualityName || "",
+          widthInches: line.widthInches || derived.widthInches || "",
+        });
+      }),
       discountPercent: row.discountPercent || 0,
       notes: row.notes || "",
     });
@@ -379,8 +535,10 @@ const SalesOrders = () => {
         "";
       const gsm =
         product?.gsmId?.name ||
-        product?.gsm?.name ||
-        sku.gsm ||
+        product?.gsmId?.value?.toString() ||
+        (typeof sku.gsm === "object"
+          ? sku.gsm?.name || sku.gsm?.value?.toString() || ""
+          : sku.gsm) ||
         "";
       const qualityName =
         product?.qualityId?.name ||
@@ -396,12 +554,14 @@ const SalesOrders = () => {
         qualityName,
         widthInches: sku.widthInches,
         lengthMetersPerRoll: defaultLength,
+        totalMeters: 0,
+        bifurcations: [],
       });
 
-      // Calculate pricing (lineTotal)
+      // Calculate pricing (lineTotal) using product-specific rate
       const pricing = calculateLinePrice(
         updatedLine,
-        selectedCustomer?.baseRate44,
+        getLineBaseRate(updatedLine),
         watchDiscountPercent
       );
 
@@ -413,15 +573,53 @@ const SalesOrders = () => {
   };
 
   const handleQtyChange = (index, qty) => {
-    const updatedLine = { ...watchLines[index], qtyRolls: qty };
+    const line = watchLines[index] || {};
+    const length = toNumber(line.lengthMetersPerRoll);
+    const newTotalMeters = toNumber(qty) * length;
+    const updatedLine = { ...line, qtyRolls: qty, totalMeters: newTotalMeters, bifurcations: [] };
     setValue(`lines.${index}.qtyRolls`, qty);
+    setValue(`lines.${index}.totalMeters`, newTotalMeters);
+    setValue(`lines.${index}.bifurcations`, []);
 
-    const pricing = calculateLinePrice(
-      updatedLine,
-      selectedCustomer?.baseRate44,
-      watchDiscountPercent
-    );
+    const pricing = calculateLinePrice(updatedLine, getLineBaseRate(updatedLine), watchDiscountPercent);
     setValue(`lines.${index}.lineTotal`, pricing.lineTotal);
+  };
+
+  const handleTotalMetersChange = (index, value) => {
+    const totalM = toNumber(value);
+    const line = watchLines[index] || {};
+    const length = toNumber(line.lengthMetersPerRoll) || 1;
+    const derivedQty = Math.round(totalM / length);
+    const updatedLine = { ...line, totalMeters: totalM, qtyRolls: derivedQty, bifurcations: [] };
+    setValue(`lines.${index}.totalMeters`, totalM);
+    setValue(`lines.${index}.qtyRolls`, derivedQty);
+    setValue(`lines.${index}.bifurcations`, []);
+    const pricing = calculateLinePrice(updatedLine, getLineBaseRate(updatedLine), watchDiscountPercent);
+    setValue(`lines.${index}.lineTotal`, pricing.lineTotal);
+  };
+
+  const handleOpenBifurcation = (index) => {
+    const line = watchLines[index] || {};
+    const length = toNumber(line.lengthMetersPerRoll) || 1000;
+    const totalM = toNumber(line.totalMeters) || toNumber(line.lengthMetersPerRoll) * toNumber(line.qtyRolls);
+    const existingGroups = Array.isArray(line.bifurcations) && line.bifurcations.length > 0
+      ? line.bifurcations
+      : [{ qty: toNumber(line.qtyRolls) || Math.ceil(totalM / length), lengthMeters: length }];
+    setBifurcationDialog({ open: true, lineIndex: index, targetMeters: totalM, groups: existingGroups });
+  };
+
+  const handleBifurcationSave = () => {
+    const { lineIndex, groups } = bifurcationDialog;
+    const sumMeters = groups.reduce((s, g) => s + toNumber(g.qty) * toNumber(g.lengthMeters), 0);
+    const totalQty = groups.reduce((s, g) => s + toNumber(g.qty), 0);
+    const line = watchLines[lineIndex] || {};
+    setValue(`lines.${lineIndex}.bifurcations`, groups);
+    setValue(`lines.${lineIndex}.totalMeters`, sumMeters);
+    setValue(`lines.${lineIndex}.qtyRolls`, totalQty);
+    const updatedLine = { ...line, bifurcations: groups, totalMeters: sumMeters, qtyRolls: totalQty };
+    const pricing = calculateLinePrice(updatedLine, getLineBaseRate(updatedLine), watchDiscountPercent);
+    setValue(`lines.${lineIndex}.lineTotal`, pricing.lineTotal);
+    setBifurcationDialog({ open: false, lineIndex: null, targetMeters: 0, groups: [] });
   };
 
   const handleOverrideRateChange = (index, overrideRate) => {
@@ -430,7 +628,7 @@ const SalesOrders = () => {
     const line = { ...watchLines[index], overrideRatePerRoll: overrideRate };
     const pricing = calculateLinePrice(
       line,
-      selectedCustomer?.baseRate44,
+      getLineBaseRate(line),
       watchDiscountPercent
     );
     setValue(`lines.${index}.lineTotal`, pricing.lineTotal);
@@ -481,14 +679,11 @@ const SalesOrders = () => {
         return;
       }
 
-      // Calculate final values for each line
+      // Calculate final values for each line using product-specific base rate
       const processedLines = data.lines.map((line) => {
         if (selectedCustomer && line.widthInches) {
-          const pricing = calculateLinePrice(
-            line,
-            selectedCustomer.baseRate44,
-            data.discountPercent
-          );
+          const lineBaseRate = getLineBaseRate(line);
+          const pricing = calculateLinePrice(line, lineBaseRate, data.discountPercent);
           return {
             ...normalizeLine(line),
             lineTotal: pricing.lineTotal,
@@ -498,11 +693,7 @@ const SalesOrders = () => {
         return normalizeLine(line);
       });
 
-      const finalTotals = computeTotals(
-        processedLines,
-        data.discountPercent,
-        selectedCustomer?.baseRate44 || 0
-      );
+      const finalTotals = computeTotals(processedLines, data.discountPercent);
 
       const orderData = {
         ...data,
@@ -580,21 +771,14 @@ const SalesOrders = () => {
       headerName: "Total Amount",
       renderCell: (params) => {
         const order = params.row;
-        // Find customer to get baseRate44
-        const customer = customers.find(
-          (c) => c._id === normalizeId(order.customerId)
-        );
-        const baseRate = toNumber(customer?.baseRate44);
-
-        // Calculate total: Total Meters * Base Rate
-        let calculatedTotal = 0;
-        (order.lines || []).forEach((line) => {
-          const totalMeters =
-            toNumber(line.lengthMetersPerRoll) * toNumber(line.qtyRolls);
-          calculatedTotal += totalMeters * baseRate;
-        });
-
-        return formatCurrency(calculatedTotal);
+        // Use stored total; fall back to summing per-line stored lineTotals
+        const total =
+          toNumber(order.total) ||
+          (order.lines || []).reduce(
+            (sum, line) => sum + toNumber(line.lineTotal),
+            0
+          );
+        return formatCurrency(total);
       },
     },
   ];
@@ -621,6 +805,7 @@ const SalesOrders = () => {
         columns={columns}
         rows={orders}
         onAdd={handleAdd}
+        onView={handleView}
         onEdit={handleEdit}
         customActions={customActions.filter(
           (action) => !action.show || action.show
@@ -629,137 +814,235 @@ const SalesOrders = () => {
 
       <Dialog
         open={openDialog}
-        onClose={() => setOpenDialog(false)}
+        onClose={() => { setOpenDialog(false); setViewMode(false); setCustomerRates([]); }}
         maxWidth="xl"
         fullWidth
       >
         <form onSubmit={handleSubmit(onSubmit)}>
           <DialogTitle>
-            {selectedOrder
+            {viewMode
+              ? `View Sales Order: ${selectedOrder?.soNumber}`
+              : selectedOrder
               ? `Edit Sales Order: ${selectedOrder.soNumber}`
               : "Add Sales Order"}
           </DialogTitle>
           <DialogContent>
-            <Grid container spacing={2} sx={{ mb: 2 }}>
-              <Grid item xs={12} md={6}>
-                <Controller
-                  name="customerId"
-                  control={control}
-                  rules={{ required: "Customer is required" }}
-                  render={({ field }) => (
-                    <TextField
-                      {...field}
-                      select
-                      fullWidth
-                      label="Customer"
-                      error={!!errors.customerId}
-                      helperText={errors.customerId?.message}
+            {/* ── Two-column header ── */}
+            <Grid container spacing={2} sx={{ mt: 0.5, mb: 2 }}>
+
+              {/* Part 1 — Customer info */}
+              <Grid item xs={12} md={5}>
+                <Stack spacing={2}>
+                  {/* Customer + Date */}
+                  <Controller
+                    name="customerId"
+                    control={control}
+                    rules={{ required: "Customer is required" }}
+                    render={({ field }) => (
+                      <TextField
+                        {...field}
+                        select
+                        fullWidth
+                        size="small"
+                        label="Customer"
+                        error={!!errors.customerId}
+                        helperText={errors.customerId?.message}
+                        inputProps={{ readOnly: viewMode }}
+                        disabled={viewMode}
+                      >
+                        {customers.map((customer) => (
+                          <MenuItem key={customer._id} value={customer._id}>
+                            {customer.companyName || customer.customerCode || "Customer"}{" "}
+                            ({customer.customerCode || "N/A"})
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                    )}
+                  />
+
+                  <Controller
+                    name="date"
+                    control={control}
+                    rules={{ required: "Date is required" }}
+                    render={({ field }) => (
+                      <DatePicker
+                        {...field}
+                        label="Order Date"
+                        disabled={viewMode}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            fullWidth
+                            size="small"
+                            error={!!errors.date}
+                            helperText={errors.date?.message}
+                          />
+                        )}
+                      />
+                    )}
+                  />
+
+                  {/* Credit info — 2×2 grid */}
+                  {selectedCustomer && (
+                    <Box
+                      sx={{
+                        px: 1.5,
+                        py: 1.25,
+                        bgcolor: "grey.50",
+                        borderRadius: 1,
+                        border: "1px solid",
+                        borderColor: "divider",
+                      }}
                     >
-                      {customers.map((customer) => (
-                        <MenuItem key={customer._id} value={customer._id}>
-                          {customer.companyName ||
-                            customer.customerCode ||
-                            "Customer"}{" "}
-                          ({customer.customerCode || "N/A"})
-                        </MenuItem>
-                      ))}
-                    </TextField>
+                      <Grid container rowSpacing={1.5} columnSpacing={2}>
+                        {[
+                          {
+                            label: "Credit Limit",
+                            value: formatCurrency(
+                              selectedCustomer.creditPolicy?.creditLimit || 0
+                            ),
+                          },
+                          {
+                            label: "Outstanding",
+                            value: formatCurrency(pendingLimit),
+                          },
+                          {
+                            label: "Customer Group",
+                            value:
+                              selectedCustomer.customerGroupId?.name ||
+                              selectedCustomer.customerGroup?.name ||
+                              "—",
+                          },
+                        ].map((stat) => (
+                          <Grid item xs={6} key={stat.label}>
+                            <Typography variant="caption" color="text.disabled" display="block">
+                              {stat.label}
+                            </Typography>
+                            <Typography variant="body2" fontWeight={500}>
+                              {stat.value}
+                            </Typography>
+                          </Grid>
+                        ))}
+
+                        {/* Due Days — editable */}
+                        <Grid item xs={6}>
+                          <Typography variant="caption" color="text.disabled" display="block">
+                            Due Days
+                          </Typography>
+                          {viewMode ? (
+                            <Typography variant="body2" fontWeight={500}>
+                              {watch("dueDays") ?? 0} days
+                            </Typography>
+                          ) : (
+                            <Controller
+                              name="dueDays"
+                              control={control}
+                              render={({ field }) => (
+                                <Stack direction="row" alignItems="baseline" spacing={0.5}>
+                                  <InputBase
+                                    {...field}
+                                    type="number"
+                                    inputProps={{ min: 0 }}
+                                    onChange={(e) =>
+                                      field.onChange(Number(e.target.value))
+                                    }
+                                    sx={{
+                                      width: 44,
+                                      "& input": {
+                                        p: 0,
+                                        fontSize: "0.875rem",
+                                        fontWeight: 500,
+                                        color: "text.primary",
+                                        borderBottom: "1px solid",
+                                        borderColor: "text.disabled",
+                                      },
+                                    }}
+                                  />
+                                  <Typography variant="body2" color="text.secondary">
+                                    days
+                                  </Typography>
+                                </Stack>
+                              )}
+                            />
+                          )}
+                        </Grid>
+                      </Grid>
+                    </Box>
                   )}
-                />
+
+                  {/* Credit check alert */}
+                  {creditCheckResult && (
+                    <Alert
+                      severity={creditCheckResult.blocked ? "error" : "success"}
+                      action={
+                        <Button size="small" onClick={() => setShowCreditDialog(true)}>
+                          Details
+                        </Button>
+                      }
+                    >
+                      {creditCheckResult.blocked
+                        ? "Customer credit blocked!"
+                        : "Credit check passed"}
+                    </Alert>
+                  )}
+                </Stack>
               </Grid>
 
-              <Grid item xs={12} md={6}>
-                <Controller
-                  name="date"
-                  control={control}
-                  rules={{ required: "Date is required" }}
-                  render={({ field }) => (
-                    <DatePicker
-                      {...field}
-                      label="Order Date"
-                      renderInput={(params) => (
-                        <TextField
-                          {...params}
-                          fullWidth
-                          error={!!errors.date}
-                          helperText={errors.date?.message}
-                        />
-                      )}
-                    />
-                  )}
-                />
+              {/* Part 2 — Product-wise base rates */}
+              <Grid item xs={12} md={7}>
+                <Box
+                  sx={{
+                    height: "100%",
+                    border: "1px solid",
+                    borderColor: "divider",
+                    borderRadius: 1,
+                    overflow: "hidden",
+                    display: "flex",
+                    flexDirection: "column",
+                  }}
+                >
+                  <Box sx={{ px: 2, py: 1, bgcolor: "grey.50", borderBottom: "1px solid", borderColor: "divider" }}>
+                    <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}>
+                      SKU Base Rates
+                    </Typography>
+                  </Box>
+                  <TableContainer sx={{ maxHeight: 220, overflow: "auto", flex: 1 }}>
+                    <Table size="small" stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }}>SKU</TableCell>
+                          <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }} align="right">Base Rate</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {customerRates.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={2} align="center" sx={{ color: "text.disabled", py: 3 }}>
+                              {selectedCustomer
+                                ? "No rates configured for this customer"
+                                : "Select a customer to view rates"}
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          customerRates.map((rate) => (
+                            <TableRow key={rate._id} hover>
+                              <TableCell>
+                                {rate.skuId?.skuCode ||
+                                  rate.skuId?.skuAlias ||
+                                  "—"}
+                              </TableCell>
+                              <TableCell align="right">
+                                {formatCurrency(rate.baseRate)}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                </Box>
               </Grid>
             </Grid>
-
-            {creditCheckResult && (
-              <Alert
-                severity={creditCheckResult.blocked ? "error" : "success"}
-                sx={{ mb: 2 }}
-                action={
-                  <Button
-                    size="small"
-                    onClick={() => setShowCreditDialog(true)}
-                  >
-                    Details
-                  </Button>
-                }
-              >
-                {creditCheckResult.blocked
-                  ? "Customer credit blocked!"
-                  : "Credit check passed"}
-              </Alert>
-            )}
-
-            {selectedCustomer && (
-              <Paper sx={{ p: 2, mb: 2, bgcolor: "grey.50" }}>
-                <Grid container spacing={2} alignItems="flex-start">
-                  <Grid item xs={12} md={2.4}>
-                    <Typography variant="caption" color="text.secondary">
-                      Base Rate (44")
-                    </Typography>
-                    <Typography variant="body1">
-                      {formatCurrency(selectedCustomer.baseRate44)}
-                    </Typography>
-                  </Grid>
-                  <Grid item xs={12} md={2.4}>
-                    <Typography variant="caption" color="text.secondary">
-                      Credit Limit
-                    </Typography>
-                    <Typography variant="body1">
-                      {formatCurrency(
-                        selectedCustomer.creditPolicy?.creditLimit || 0
-                      )}
-                    </Typography>
-                  </Grid>
-                  <Grid item xs={12} md={2.4}>
-                    <Typography variant="caption" color="text.secondary">
-                      Pending Limit
-                    </Typography>
-                    <Typography variant="body1">
-                      {formatCurrency(pendingLimit)}
-                    </Typography>
-                  </Grid>
-                  <Grid item xs={12} md={2.4}>
-                    <Typography variant="caption" color="text.secondary">
-                      Credit Days
-                    </Typography>
-                    <Typography variant="body1">
-                      {selectedCustomer.creditPolicy?.creditDays || 0} days
-                    </Typography>
-                  </Grid>
-                  <Grid item xs={12} md={2.4}>
-                    <Typography variant="caption" color="text.secondary">
-                      Customer Group
-                    </Typography>
-                    <Typography variant="body1">
-                      {selectedCustomer.customerGroupId?.name ||
-                        selectedCustomer.customerGroup?.name ||
-                        "-"}
-                    </Typography>
-                  </Grid>
-                </Grid>
-              </Paper>
-            )}
 
             <Typography variant="h6" gutterBottom>
               Order Lines
@@ -778,7 +1061,7 @@ const SalesOrders = () => {
                     <TableCell>Qty</TableCell>
                     <TableCell>Base Rate</TableCell>
                     <TableCell>Total Meters</TableCell>
-                    <TableCell>Override Rate</TableCell>
+                    <TableCell>Rate</TableCell>
                     <TableCell>Total Amount</TableCell>
                     <TableCell></TableCell>
                   </TableRow>
@@ -786,15 +1069,19 @@ const SalesOrders = () => {
                 <TableBody>
                   {fields.map((field, index) => {
                     const line = watchLines[index] || {};
+                    const skuRateMatch = getSkuRateMatch(line);
+                    const hasSkuSelected = !!normalizeId(line?.skuId);
+                    const baseRate = getLineBaseRate(line);
                     const pricing = calculateLinePrice(
                       line,
-                      selectedCustomer?.baseRate44,
+                      baseRate,
                       watchDiscountPercent
                     );
-                    const baseRate = toNumber(selectedCustomer?.baseRate44);
-                    const totalMeters =
-                      toNumber(line.lengthMetersPerRoll) *
-                      toNumber(line.qtyRolls);
+                    const effectiveTotalMeters =
+                      toNumber(line.totalMeters) ||
+                      toNumber(line.lengthMetersPerRoll) * toNumber(line.qtyRolls);
+                    const hasBifurcation =
+                      Array.isArray(line.bifurcations) && line.bifurcations.length > 0;
 
                     return (
                       <TableRow key={field.id}>
@@ -808,6 +1095,7 @@ const SalesOrders = () => {
                                 select
                                 size="small"
                                 fullWidth
+                                disabled={viewMode}
                                 onChange={(e) =>
                                   handleSKUChange(index, e.target.value)
                                 }
@@ -836,6 +1124,7 @@ const SalesOrders = () => {
                                 type="number"
                                 size="small"
                                 sx={{ width: 80 }}
+                                disabled={viewMode}
                               />
                             )}
                           />
@@ -850,6 +1139,7 @@ const SalesOrders = () => {
                                 type="number"
                                 size="small"
                                 sx={{ width: 60 }}
+                                disabled={viewMode}
                                 onChange={(e) =>
                                   handleQtyChange(index, e.target.value)
                                 }
@@ -857,8 +1147,90 @@ const SalesOrders = () => {
                             )}
                           />
                         </TableCell>
-                        <TableCell>{formatCurrency(baseRate)}</TableCell>
-                        <TableCell>{totalMeters}</TableCell>
+                        <TableCell sx={{ minWidth: 130 }}>
+                          {!hasSkuSelected ? (
+                            <Typography variant="body2" color="text.disabled">—</Typography>
+                          ) : skuRateMatch ? (
+                            <Typography variant="body2">
+                              {formatCurrency(skuRateMatch.baseRate)}
+                            </Typography>
+                          ) : addingRateForLine === index ? (
+                            <Stack direction="row" spacing={0.5} alignItems="center">
+                              <TextField
+                                size="small"
+                                type="number"
+                                value={newRateValue}
+                                onChange={(e) => setNewRateValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleSaveSkuRate(index);
+                                  if (e.key === "Escape") { setAddingRateForLine(null); setNewRateValue(""); }
+                                }}
+                                autoFocus
+                                sx={{ width: 80 }}
+                                inputProps={{ min: 0, step: "any" }}
+                              />
+                              <Tooltip title="Save rate">
+                                <IconButton size="small" color="primary" onClick={() => handleSaveSkuRate(index)}>
+                                  <SaveIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                              <Tooltip title="Cancel">
+                                <IconButton size="small" onClick={() => { setAddingRateForLine(null); setNewRateValue(""); }}>
+                                  <CloseIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            </Stack>
+                          ) : (
+                            <Tooltip title="No SKU rate found. Click to add.">
+                              <Box
+                                sx={{ display: "flex", alignItems: "center", gap: 0.5, cursor: viewMode ? "default" : "pointer" }}
+                                onClick={() => {
+                                  if (!viewMode) { setAddingRateForLine(index); setNewRateValue(""); }
+                                }}
+                              >
+                                <WarningIcon sx={{ fontSize: 14, color: "warning.main" }} />
+                                <Typography variant="caption" color="warning.main">
+                                  {viewMode ? "No rate" : "Add rate"}
+                                </Typography>
+                              </Box>
+                            </Tooltip>
+                          )}
+                        </TableCell>
+                        <TableCell sx={{ minWidth: 150 }}>
+                          <Stack direction="row" alignItems="center" spacing={0.5}>
+                            {viewMode ? (
+                              <Typography variant="body2">
+                                {effectiveTotalMeters.toLocaleString()}
+                                {hasBifurcation && (
+                                  <Typography component="span" variant="caption" color="primary.main" sx={{ ml: 0.5 }}>
+                                    ({line.bifurcations.length} groups)
+                                  </Typography>
+                                )}
+                              </Typography>
+                            ) : (
+                              <TextField
+                                size="small"
+                                type="number"
+                                value={effectiveTotalMeters || ""}
+                                onChange={(e) => handleTotalMetersChange(index, e.target.value)}
+                                sx={{ width: 90 }}
+                                inputProps={{ min: 0, step: 1 }}
+                                disabled={!hasSkuSelected}
+                              />
+                            )}
+                            {hasSkuSelected && (
+                              <Tooltip title={hasBifurcation ? `${line.bifurcations.length} groups configured` : "Set bifurcation"}>
+                                <IconButton
+                                  size="small"
+                                  color={hasBifurcation ? "primary" : "default"}
+                                  onClick={() => handleOpenBifurcation(index)}
+                                >
+                                  <BifurcateIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                          </Stack>
+                        </TableCell>
                         <TableCell>
                           <Controller
                             name={`lines.${index}.overrideRatePerRoll`}
@@ -872,6 +1244,7 @@ const SalesOrders = () => {
                                 decimalScale={2}
                                 sx={{ width: 100 }}
                                 placeholder="Optional"
+                                disabled={viewMode}
                                 onValueChange={(values) =>
                                   handleOverrideRateChange(
                                     index,
@@ -886,7 +1259,7 @@ const SalesOrders = () => {
                           {formatCurrency(formatDisplayValue(pricing.lineTotal))}
                         </TableCell>
                         <TableCell>
-                          {fields.length > 1 && (
+                          {!viewMode && fields.length > 1 && (
                             <IconButton
                               size="small"
                               onClick={() => remove(index)}
@@ -902,25 +1275,29 @@ const SalesOrders = () => {
               </Table>
             </TableContainer>
 
-            <Button
-              startIcon={<AddIcon />}
-              onClick={() =>
-                append({
-                  skuId: "",
-                  categoryName: "",
-                  gsm: "",
-                  qualityName: "",
-                  widthInches: "",
-                  lengthMetersPerRoll: 0,
-                  qtyRolls: 0,
-                  overrideRatePerRoll: null,
-                  lineTotal: 0,
-                })
-              }
-              sx={{ mt: 1 }}
-            >
-              Add Line
-            </Button>
+            {!viewMode && (
+              <Button
+                startIcon={<AddIcon />}
+                onClick={() =>
+                  append({
+                    skuId: "",
+                    categoryName: "",
+                    gsm: "",
+                    qualityName: "",
+                    widthInches: "",
+                    lengthMetersPerRoll: 0,
+                    qtyRolls: 0,
+                    totalMeters: 0,
+                    bifurcations: [],
+                    overrideRatePerRoll: null,
+                    lineTotal: 0,
+                  })
+                }
+                sx={{ mt: 1 }}
+              >
+                Add Line
+              </Button>
+            )}
 
             <Divider sx={{ my: 2 }} />
 
@@ -936,6 +1313,7 @@ const SalesOrders = () => {
                       label="Notes"
                       multiline
                       rows={2}
+                      disabled={viewMode}
                     />
                   )}
                 />
@@ -960,17 +1338,158 @@ const SalesOrders = () => {
             </Grid>
           </DialogContent>
           <DialogActions>
-            <Button onClick={() => setOpenDialog(false)}>Cancel</Button>
-            <Button
-              type="submit"
-              variant="contained"
-              disabled={creditCheckResult?.blocked}
-            >
-              {selectedOrder ? "Update" : "Create"}
+            <Button onClick={() => { setOpenDialog(false); setViewMode(false); }}>
+              {viewMode ? "Close" : "Cancel"}
             </Button>
+            {!viewMode && (
+              <Button
+                type="submit"
+                variant="contained"
+                disabled={creditCheckResult?.blocked}
+              >
+                {selectedOrder ? "Update" : "Create"}
+              </Button>
+            )}
           </DialogActions>
         </form>
       </Dialog>
+
+      {/* Bifurcation Dialog */}
+      {bifurcationDialog.open && (() => {
+        const { targetMeters, groups } = bifurcationDialog;
+        const sumMeters = groups.reduce((s, g) => s + toNumber(g.qty) * toNumber(g.lengthMeters), 0);
+        const remaining = targetMeters - sumMeters;
+        const progress = targetMeters > 0 ? Math.min((sumMeters / targetMeters) * 100, 100) : 0;
+        const isExact = Math.abs(remaining) < 0.01;
+
+        const updateGroup = (i, field, value) => {
+          const updated = groups.map((g, idx) => idx === i ? { ...g, [field]: toNumber(value) } : g);
+          setBifurcationDialog((prev) => ({ ...prev, groups: updated }));
+        };
+        const addGroup = () => {
+          const suggestedLength = groups[0]?.lengthMeters || toNumber((watchLines[bifurcationDialog.lineIndex] || {}).lengthMetersPerRoll) || 1000;
+          const suggestedQty = remaining > 0 ? Math.max(1, Math.floor(remaining / suggestedLength)) : 1;
+          setBifurcationDialog((prev) => ({ ...prev, groups: [...prev.groups, { qty: suggestedQty, lengthMeters: suggestedLength }] }));
+        };
+        const removeGroup = (i) => setBifurcationDialog((prev) => ({ ...prev, groups: prev.groups.filter((_, idx) => idx !== i) }));
+
+        return (
+          <Dialog
+            open
+            onClose={() => setBifurcationDialog({ open: false, lineIndex: null, targetMeters: 0, groups: [] })}
+            maxWidth="sm"
+            fullWidth
+          >
+            <DialogTitle>
+              <Stack direction="row" justifyContent="space-between" alignItems="center">
+                <Box>
+                  Roll Bifurcation
+                  <Typography variant="caption" display="block" color="text.secondary">
+                    Target: {targetMeters.toLocaleString()} m
+                  </Typography>
+                </Box>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Typography variant="body2" color={isExact ? "success.main" : remaining > 0 ? "warning.main" : "error.main"} fontWeight={600}>
+                    {isExact ? "✓ Matched" : remaining > 0 ? `${remaining.toLocaleString()} m remaining` : `${Math.abs(remaining).toLocaleString()} m over`}
+                  </Typography>
+                </Stack>
+              </Stack>
+            </DialogTitle>
+            <DialogContent dividers>
+              <Box sx={{ mb: 2 }}>
+                <Stack direction="row" justifyContent="space-between" sx={{ mb: 0.5 }}>
+                  <Typography variant="caption" color="text.secondary">{sumMeters.toLocaleString()} / {targetMeters.toLocaleString()} m</Typography>
+                  <Typography variant="caption" color="text.secondary">{progress.toFixed(1)}%</Typography>
+                </Stack>
+                <LinearProgress
+                  variant="determinate"
+                  value={progress}
+                  color={isExact ? "success" : remaining < 0 ? "error" : "primary"}
+                  sx={{ height: 6, borderRadius: 1 }}
+                />
+              </Box>
+
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>#</TableCell>
+                    <TableCell>Qty (Rolls)</TableCell>
+                    <TableCell>Length / Roll (m)</TableCell>
+                    <TableCell align="right">Sub-total (m)</TableCell>
+                    <TableCell />
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {groups.map((g, i) => (
+                    <TableRow key={i}>
+                      <TableCell>{i + 1}</TableCell>
+                      <TableCell>
+                        <TextField
+                          size="small"
+                          type="number"
+                          value={g.qty}
+                          onChange={(e) => updateGroup(i, "qty", e.target.value)}
+                          sx={{ width: 80 }}
+                          inputProps={{ min: 1, step: 1 }}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <TextField
+                          size="small"
+                          type="number"
+                          value={g.lengthMeters}
+                          onChange={(e) => updateGroup(i, "lengthMeters", e.target.value)}
+                          sx={{ width: 90 }}
+                          inputProps={{ min: 1, step: 1 }}
+                        />
+                      </TableCell>
+                      <TableCell align="right">
+                        <Typography variant="body2">
+                          {(toNumber(g.qty) * toNumber(g.lengthMeters)).toLocaleString()}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>
+                        {groups.length > 1 && (
+                          <IconButton size="small" onClick={() => removeGroup(i)}>
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  <TableRow>
+                    <TableCell colSpan={3}>
+                      <Typography variant="body2" fontWeight={600}>Total</Typography>
+                    </TableCell>
+                    <TableCell align="right">
+                      <Typography variant="body2" fontWeight={600} color={isExact ? "success.main" : "text.primary"}>
+                        {sumMeters.toLocaleString()}
+                      </Typography>
+                    </TableCell>
+                    <TableCell />
+                  </TableRow>
+                </TableBody>
+              </Table>
+
+              <Button startIcon={<AddIcon />} onClick={addGroup} size="small" sx={{ mt: 1 }}>
+                Add Group
+              </Button>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setBifurcationDialog({ open: false, lineIndex: null, targetMeters: 0, groups: [] })}>
+                Cancel
+              </Button>
+              <Button
+                variant="contained"
+                onClick={handleBifurcationSave}
+                disabled={!isExact}
+              >
+                Apply
+              </Button>
+            </DialogActions>
+          </Dialog>
+        );
+      })()}
 
       {/* Credit Check Details Dialog */}
       <Dialog

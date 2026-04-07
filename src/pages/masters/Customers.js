@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
+  CircularProgress,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -19,6 +21,7 @@ import {
   Select,
   MenuItem,
   OutlinedInput,
+  InputAdornment,
   Paper,
   Tabs,
   Tab,
@@ -32,11 +35,14 @@ import {
 } from "@mui/material";
 import {
   Add as AddIcon,
-  Delete as DeleteIcon,
-  Block as BlockIcon,
+  Cancel as CancelIcon,
   CheckCircle as UnblockIcon,
+  Block as BlockIcon,
   CreditCard as CreditIcon,
+  Delete as DeleteIcon,
+  Edit as EditIcon,
   History as HistoryIcon,
+  Save as SaveIcon,
 } from "@mui/icons-material";
 import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
@@ -76,6 +82,19 @@ const Customers = () => {
     description: "",
   });
   const [creatingGroup, setCreatingGroup] = useState(false);
+
+  // Per-SKU pricing state
+  const [skus, setSkus] = useState([]);
+  const [customerBaseRates, setCustomerBaseRates] = useState([]);
+  const [selectedSku, setSelectedSku] = useState(null);
+  const [baseRateValue, setBaseRateValue] = useState("");
+  const [loadingBaseRates, setLoadingBaseRates] = useState(false);
+  const [baseRateDeleteId, setBaseRateDeleteId] = useState(null);
+  const [openBaseRateConfirm, setOpenBaseRateConfirm] = useState(false);
+  const [openEditRateDialog, setOpenEditRateDialog] = useState(false);
+  const [editingRate, setEditingRate] = useState(null);
+  const [editRateValue, setEditRateValue] = useState("");
+  const [rateHistorySku, setRateHistorySku] = useState(null);
 
   const {
     control,
@@ -131,6 +150,7 @@ const Customers = () => {
     fetchCustomers();
     fetchCustomerGroups();
     fetchAgents();
+    fetchSKUs();
   }, []);
 
   const fetchCustomers = async () => {
@@ -163,6 +183,118 @@ const Customers = () => {
       setAgents(response.agents || response.data || []);
     } catch (error) {
       console.error("Failed to fetch agents:", error);
+    }
+  };
+
+  const fetchSKUs = async () => {
+    try {
+      const response = await masterService.getSKUs({ limit: 1000 });
+      setSkus(response.skus || []);
+    } catch (error) {
+      console.error("Failed to fetch SKUs:", error);
+    }
+  };
+
+  const fetchCustomerBaseRates = useCallback(
+    async (customerId) => {
+      if (!customerId) return;
+      setLoadingBaseRates(true);
+      try {
+        const res = await masterService.getCustomerRates(customerId);
+        const rates = Array.isArray(res) ? res : res?.data || [];
+        setCustomerBaseRates(rates);
+      } catch (error) {
+        showNotification("Failed to fetch rates", "error");
+        setCustomerBaseRates([]);
+      } finally {
+        setLoadingBaseRates(false);
+      }
+    },
+    [showNotification]
+  );
+
+  const availableSkus = useMemo(() => {
+    const existingSkuIds = new Set(
+      customerBaseRates.map((rate) => rate.skuId?._id).filter(Boolean)
+    );
+    return skus.filter((sku) => !existingSkuIds.has(sku._id));
+  }, [skus, customerBaseRates]);
+
+  const handleAddBaseRate = async () => {
+    if (!selectedCustomer) {
+      showNotification("Please save the customer first", "warning");
+      return;
+    }
+    if (!selectedSku) {
+      showNotification("Please select a SKU", "warning");
+      return;
+    }
+    if (!baseRateValue || isNaN(parseFloat(baseRateValue))) {
+      showNotification("Please enter a valid rate", "warning");
+      return;
+    }
+    try {
+      await masterService.setCustomerRate(selectedCustomer._id, {
+        skuId: selectedSku._id,
+        baseRate: parseFloat(baseRateValue),
+      });
+      showNotification("Rate added successfully", "success");
+      setSelectedSku(null);
+      setBaseRateValue("");
+      fetchCustomerBaseRates(selectedCustomer._id);
+    } catch (error) {
+      showNotification(error.message || "Failed to save rate", "error");
+    }
+  };
+
+  const handleDeleteBaseRate = (skuId) => {
+    setBaseRateDeleteId(skuId);
+    setOpenBaseRateConfirm(true);
+  };
+
+  const confirmDeleteBaseRate = async () => {
+    if (!selectedCustomer || !baseRateDeleteId) return;
+    try {
+      await masterService.deleteCustomerRate(selectedCustomer._id, baseRateDeleteId);
+      showNotification("Rate deleted successfully", "success");
+      fetchCustomerBaseRates(selectedCustomer._id);
+    } catch (error) {
+      showNotification("Failed to delete rate", "error");
+    }
+    setOpenBaseRateConfirm(false);
+    setBaseRateDeleteId(null);
+  };
+
+  const handleEditBaseRate = (rate) => {
+    setEditingRate(rate);
+    setEditRateValue(rate.baseRate?.toString() || "");
+    setOpenEditRateDialog(true);
+  };
+
+  const handleSaveEditedRate = async () => {
+    if (!selectedCustomer || !editingRate) return;
+    if (!editRateValue || isNaN(parseFloat(editRateValue))) {
+      showNotification("Please enter a valid rate", "warning");
+      return;
+    }
+    const newRate = parseFloat(editRateValue);
+    if (newRate === editingRate.baseRate) {
+      showNotification("Rate is unchanged", "info");
+      setOpenEditRateDialog(false);
+      return;
+    }
+    try {
+      await masterService.setCustomerRate(selectedCustomer._id, {
+        skuId: editingRate.skuId._id,
+        baseRate: newRate,
+      });
+      showNotification("Rate updated successfully", "success");
+      setOpenEditRateDialog(false);
+      setEditingRate(null);
+      setEditRateValue("");
+      fetchCustomerBaseRates(selectedCustomer._id);
+    } catch (error) {
+      showNotification(error.message || "Failed to update rate", "error");
     }
   };
 
@@ -256,6 +388,9 @@ const Customers = () => {
       baseRate44: 0,
       active: true,
     });
+    setCustomerBaseRates([]);
+    setSelectedSku(null);
+    setBaseRateValue("");
     setTabValue(0);
     setOpenDialog(true);
   };
@@ -303,8 +438,12 @@ const Customers = () => {
       baseRate44: row.baseRate44 || 0,
       active: row.active !== undefined ? row.active : true,
     });
+    setCustomerBaseRates([]);
+    setSelectedSku(null);
+    setBaseRateValue("");
     setTabValue(0);
     setOpenDialog(true);
+    fetchCustomerBaseRates(row._id);
   };
 
   const handleDelete = (row) => {
@@ -359,17 +498,15 @@ const Customers = () => {
     }
   };
 
-  const handleViewRateHistory = async () => {
-    if (!selectedCustomer?._id) {
-      showNotification("Please select a customer first", "warning");
-      return;
-    }
-
+  const handleViewRateHistory = async (skuId = null, sku = null) => {
+    if (!selectedCustomer?._id) return;
+    setRateHistorySku(sku);
     setLoadingRateHistory(true);
     setRateHistoryDialog(true);
     try {
       const history = await masterService.getCustomerRateHistory(
-        selectedCustomer._id
+        selectedCustomer._id,
+        skuId
       );
       setRateHistory(history);
     } catch (error) {
@@ -445,9 +582,20 @@ const Customers = () => {
         await masterService.updateCustomer(selectedCustomer._id, sanitizedData);
         showNotification("Customer updated successfully", "success");
       } else {
-        await masterService.createCustomer(sanitizedData);
-        showNotification("Customer created successfully", "success");
+        const created = await masterService.createCustomer(sanitizedData);
+        const newCustomerId = created?._id || created?.id;
+        showNotification(
+          "Customer created successfully. You can now add rates.",
+          "success"
+        );
+        if (newCustomerId) {
+          setSelectedCustomer(created);
+          setTabValue(3);
+          fetchCustomers();
+          return;
+        }
       }
+
       setOpenDialog(false);
       fetchCustomers();
     } catch (error) {
@@ -1094,63 +1242,200 @@ const Customers = () => {
             </TabPanel>
 
             <TabPanel value={tabValue} index={3}>
-              <Grid container spacing={2}>
-                <Grid item xs={12} md={6}>
-                  <Controller
-                    name="baseRate44"
-                    control={control}
-                    rules={{
-                      required: 'Base rate for 44" is required',
-                      min: { value: 0, message: "Rate must be positive" },
-                    }}
-                    render={({ field: { onChange, value, ...field } }) => (
-                      <Box
-                        sx={{
-                          display: "flex",
-                          alignItems: "flex-start",
-                          gap: 1,
-                        }}
-                      >
-                        <NumericFormat
-                          {...field}
-                          value={value || 0}
-                          onValueChange={(values) => {
-                            // Store the numeric value, not the formatted string
-                            onChange(values.floatValue || 0);
+              {!selectedCustomer ? (
+                <Typography
+                  color="text.secondary"
+                  sx={{ textAlign: "center", py: 4 }}
+                >
+                  Please save the customer first to manage rates.
+                </Typography>
+              ) : (
+                <Box>
+                  {/* Add Base Rate Form */}
+                  <Paper sx={{ p: 2, mb: 3, bgcolor: "grey.50" }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Add New Rate
+                    </Typography>
+                    <Grid container spacing={2} alignItems="center">
+                      <Grid item xs={12} sm={6}>
+                        <Autocomplete
+                          value={selectedSku}
+                          onChange={(event, newValue) => {
+                            setSelectedSku(newValue);
+                            setBaseRateValue("");
                           }}
-                          customInput={TextField}
-                          fullWidth
-                          label='Base Rate for 44"'
-                          thousandSeparator=","
-                          decimalScale={2}
-                          prefix="₹"
-                          allowNegative={false}
-                          error={!!errors.baseRate44}
-                          helperText={errors.baseRate44?.message}
+                          options={availableSkus}
+                          getOptionLabel={(option) => option.skuCode || ""}
+                          filterOptions={(options, { inputValue }) => {
+                            const search = inputValue.toLowerCase().trim();
+                            if (!search) return options;
+                            return options.filter((option) => {
+                              const product = option.productId;
+                              const searchableFields = [
+                                option.skuCode,
+                                option.skuAlias,
+                                String(option.widthInches),
+                                product?.productCode,
+                                product?.productAlias,
+                                product?.categoryId?.name,
+                                product?.gsmId?.name,
+                                product?.qualityId?.name,
+                              ];
+                              return searchableFields.some(
+                                (field) =>
+                                  field && field.toLowerCase().includes(search)
+                              );
+                            });
+                          }}
+                          renderOption={(props, option) => (
+                            <li {...props} key={option._id}>
+                              {option.skuCode}
+                            </li>
+                          )}
+                          renderInput={(params) => (
+                            <TextField
+                              {...params}
+                              label="Select SKU"
+                              placeholder="Search by SKU, width, category..."
+                              size="small"
+                            />
+                          )}
+                          isOptionEqualToValue={(option, value) =>
+                            option._id === value._id
+                          }
+                          noOptionsText={
+                            customerBaseRates.length === skus.length
+                              ? "All SKUs have rates configured"
+                              : "No matching SKUs"
+                          }
                         />
-                        {selectedCustomer && (
-                          <Tooltip title="View Rate History">
-                            <IconButton
-                              onClick={handleViewRateHistory}
-                              color="primary"
-                              sx={{ mt: 1 }}
-                            >
-                              <HistoryIcon />
-                            </IconButton>
-                          </Tooltip>
-                        )}
-                      </Box>
-                    )}
-                  />
-                </Grid>
+                      </Grid>
+                      <Grid item xs={12} sm={4}>
+                        <TextField
+                          fullWidth
+                          size="small"
+                          label="Rate"
+                          type="number"
+                          value={baseRateValue}
+                          onChange={(e) => setBaseRateValue(e.target.value)}
+                          InputProps={{
+                            startAdornment: (
+                              <InputAdornment position="start">₹</InputAdornment>
+                            ),
+                          }}
+                          inputProps={{ min: 0, step: 0.01 }}
+                        />
+                      </Grid>
+                      <Grid item xs={12} sm={2}>
+                        <Button
+                          fullWidth
+                          variant="contained"
+                          startIcon={<AddIcon />}
+                          onClick={handleAddBaseRate}
+                          disabled={!selectedSku || !baseRateValue}
+                        >
+                          Add
+                        </Button>
+                      </Grid>
+                    </Grid>
+                  </Paper>
 
-                <Grid item xs={12}>
-                  <Typography variant="caption" color="text.secondary">
-                    Note: Rates for other widths will be automatically
-                    calculated based on 44" rate
-                  </Typography>
-                </Grid>
-              </Grid>
+                  {/* Rates List */}
+                  <Box
+                    sx={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      mb: 1,
+                    }}
+                  >
+                    <Typography variant="subtitle2">Existing Rates</Typography>
+                    <Tooltip title="View Full Rate History">
+                      <IconButton
+                        size="small"
+                        color="primary"
+                        onClick={() => handleViewRateHistory(null, null)}
+                      >
+                        <HistoryIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+
+                  {loadingBaseRates ? (
+                    <Box
+                      sx={{ display: "flex", justifyContent: "center", py: 4 }}
+                    >
+                      <CircularProgress size={24} />
+                    </Box>
+                  ) : customerBaseRates.length === 0 ? (
+                    <Typography
+                      color="text.secondary"
+                      sx={{ textAlign: "center", py: 4 }}
+                    >
+                      No rates configured for this customer.
+                    </Typography>
+                  ) : (
+                    <TableContainer component={Paper} sx={{ maxHeight: 300 }}>
+                      <Table size="small" stickyHeader>
+                        <TableHead>
+                          <TableRow>
+                            <TableCell>SKU Code</TableCell>
+                            <TableCell>Product</TableCell>
+                            <TableCell align="right">Rate (₹)</TableCell>
+                            <TableCell align="center">Actions</TableCell>
+                          </TableRow>
+                        </TableHead>
+                        <TableBody>
+                          {customerBaseRates.map((rate) => {
+                            const sku = rate.skuId;
+                            const product = sku?.productId;
+                            return (
+                              <TableRow key={rate._id} hover>
+                                <TableCell>{sku?.skuCode || "-"}</TableCell>
+                                <TableCell>
+                                  {product?.productCode || "-"}
+                                </TableCell>
+                                <TableCell align="right">
+                                  {rate?.baseRate?.toLocaleString("en-IN") || "-"}
+                                </TableCell>
+                                <TableCell align="center">
+                                  <Tooltip title="View History">
+                                    <IconButton
+                                      size="small"
+                                      color="primary"
+                                      onClick={() =>
+                                        handleViewRateHistory(sku?._id, sku)
+                                      }
+                                    >
+                                      <HistoryIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                  <IconButton
+                                    size="small"
+                                    color="primary"
+                                    onClick={() => handleEditBaseRate(rate)}
+                                  >
+                                    <EditIcon fontSize="small" />
+                                  </IconButton>
+                                  <IconButton
+                                    size="small"
+                                    color="error"
+                                    onClick={() =>
+                                      handleDeleteBaseRate(sku?._id)
+                                    }
+                                  >
+                                    <DeleteIcon fontSize="small" />
+                                  </IconButton>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </TableContainer>
+                  )}
+                </Box>
+              )}
             </TabPanel>
           </DialogContent>
           <DialogActions>
@@ -1232,84 +1517,65 @@ const Customers = () => {
       <Dialog
         open={rateHistoryDialog}
         onClose={() => setRateHistoryDialog(false)}
-        maxWidth="lg"
+        maxWidth="md"
         fullWidth
       >
         <DialogTitle>
-          Rate History - {selectedCustomer?.name || "Customer"}
+          Rate History — {selectedCustomer?.companyName || "Customer"}
+          {rateHistorySku
+            ? ` / ${rateHistorySku.skuCode || rateHistorySku.skuAlias}`
+            : " (All SKUs)"}
         </DialogTitle>
         <DialogContent>
           {loadingRateHistory ? (
-            <Typography>Loading rate history...</Typography>
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 2 }}>
+              <CircularProgress size={18} />
+              <Typography variant="body2" color="text.secondary">
+                Loading rate history…
+              </Typography>
+            </Box>
           ) : rateHistory.length === 0 ? (
-            <Typography color="text.secondary">
-              No rate history found for this customer.
+            <Typography color="text.secondary" sx={{ mt: 2 }}>
+              No rate history found.
             </Typography>
           ) : (
-            <TableContainer component={Paper} sx={{ mt: 2 }}>
-              <Table size="small">
+            <TableContainer component={Paper} sx={{ mt: 2, maxHeight: 400 }}>
+              <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
                     <TableCell>Date</TableCell>
+                    <TableCell>SKU Code</TableCell>
                     <TableCell>Product</TableCell>
-                    <TableCell>44" Rate</TableCell>
-                    <TableCell>Applied Width</TableCell>
-                    <TableCell>Applied Rate</TableCell>
-                    <TableCell>SO Number</TableCell>
-                    <TableCell>SI Number</TableCell>
-                    <TableCell>Type</TableCell>
+                    <TableCell align="right">Rate (₹)</TableCell>
                     <TableCell>Notes</TableCell>
+                    <TableCell>Valid From</TableCell>
+                    <TableCell>Valid To</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {rateHistory.map((history, index) => (
-                    <TableRow key={index}>
-                      <TableCell>
-                        {formatDate(history.createdAt || history.date)}
-                      </TableCell>
-                      <TableCell>
-                        {history.productId?.name ||
-                          history.productId?.productCode ||
-                          "-"}
-                      </TableCell>
-                      <TableCell>
-                        {formatCurrency(history.effectiveRate44)}
-                      </TableCell>
-                      <TableCell>
-                        {history.appliedWidth
-                          ? `${history.appliedWidth}"`
-                          : "-"}
-                      </TableCell>
-                      <TableCell>
-                        {history.appliedRate
-                          ? formatCurrency(history.appliedRate)
-                          : "-"}
-                      </TableCell>
-                      <TableCell>{history.soId?.soNumber || "-"}</TableCell>
-                      <TableCell>{history.siId?.siNumber || "-"}</TableCell>
-                      <TableCell>
-                        {history.isOverride && (
-                          <Chip
-                            label="Override"
-                            color="warning"
-                            size="small"
-                            sx={{ mr: 0.5 }}
-                          />
-                        )}
-                        {history.isSpecialDeal && (
-                          <Chip
-                            label="Special Deal"
-                            color="info"
-                            size="small"
-                          />
-                        )}
-                        {!history.isOverride && !history.isSpecialDeal && "-"}
-                      </TableCell>
-                      <TableCell>
-                        {history.overrideReason || history.dealNotes || "-"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {rateHistory.map((entry, index) => {
+                    const sku = entry.skuId;
+                    const product = sku?.productId;
+                    return (
+                      <TableRow key={index}>
+                        <TableCell>{formatDate(entry.createdAt)}</TableCell>
+                        <TableCell>{sku?.skuCode || "—"}</TableCell>
+                        <TableCell>{product?.productCode || "—"}</TableCell>
+                        <TableCell align="right">
+                          {entry.baseRate?.toLocaleString("en-IN") || "—"}
+                        </TableCell>
+                        <TableCell>{entry.notes || "—"}</TableCell>
+                        <TableCell>{formatDate(entry.validFrom)}</TableCell>
+                        <TableCell>
+                          {entry.validTo ? (
+                            formatDate(entry.validTo)
+                          ) : (
+                            <Chip label="Current" color="success" size="small" />
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>
@@ -1319,6 +1585,61 @@ const Customers = () => {
           <Button onClick={() => setRateHistoryDialog(false)}>Close</Button>
         </DialogActions>
       </Dialog>
+
+      {/* Edit Rate Dialog */}
+      <Dialog
+        open={openEditRateDialog}
+        onClose={() => setOpenEditRateDialog(false)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Update Rate</DialogTitle>
+        <DialogContent>
+          {editingRate && (
+            <Box sx={{ pt: 1 }}>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                SKU: <strong>{editingRate.skuId?.skuCode}</strong>
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                Current Rate:{" "}
+                <strong>₹{editingRate.baseRate?.toLocaleString("en-IN")}</strong>
+              </Typography>
+              <TextField
+                fullWidth
+                label="New Rate"
+                type="number"
+                value={editRateValue}
+                onChange={(e) => setEditRateValue(e.target.value)}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">₹</InputAdornment>
+                  ),
+                }}
+                inputProps={{ min: 0, step: 0.01 }}
+                autoFocus
+              />
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenEditRateDialog(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleSaveEditedRate}
+            disabled={!editRateValue}
+          >
+            Update
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <ConfirmDialog
+        open={openBaseRateConfirm}
+        onClose={() => setOpenBaseRateConfirm(false)}
+        onConfirm={confirmDeleteBaseRate}
+        title="Delete Rate"
+        message="Are you sure you want to delete this rate?"
+      />
 
       <Dialog open={groupDialogOpen} onClose={handleCloseGroupDialog}>
         <DialogTitle>Add Customer Group</DialogTitle>
