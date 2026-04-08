@@ -91,6 +91,7 @@ const menuItems = [
     children: [
       { title: "Purchase Orders", path: "/purchase-orders", icon: <Assignment /> },
       { title: "Purchase Invoices", path: "/purchase-invoices", icon: <Receipt /> },
+      { title: "GRNs", path: "/grns", icon: <CheckCircleIcon /> },
     ],
   },
   {
@@ -98,6 +99,7 @@ const menuItems = [
     icon: <Inventory />,
     children: [
       { title: "Rolls", path: "/rolls", icon: <Inventory2Icon /> },
+      { title: "Unmapped Rolls", path: "/unmapped-rolls", icon: <LowStockIcon /> },
       { title: "Stock Summary", path: "/stock-summary", icon: <BarChartIcon /> },
     ],
   },

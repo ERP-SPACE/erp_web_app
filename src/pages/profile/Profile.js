@@ -127,7 +127,8 @@ const Profile = () => {
       await changePassword({ currentPassword: data.currentPassword, newPassword: data.newPassword });
       resetPassword();
     } catch (err) {
-      setPasswordError(err?.response?.data?.message || "Failed to change password. Check your current password.");
+      // api.js rejects with plain { message, code, status } — not an axios error object
+      setPasswordError(err?.message || "Failed to change password. Check your current password.");
     } finally {
       setPasswordLoading(false);
     }

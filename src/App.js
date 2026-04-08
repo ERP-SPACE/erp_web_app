@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { BrowserRouter } from "react-router-dom";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
@@ -12,13 +12,27 @@ import ErrorBoundary from "./components/common/ErrorBoundary";
 import { IconButton } from "@mui/material";
 import { Close } from "@mui/icons-material";
 
-const theme = createTheme({
+const ERP_SETTINGS_KEY = "erp_settings";
+
+const readThemeSettings = () => {
+  try {
+    const raw = localStorage.getItem(ERP_SETTINGS_KEY);
+    if (!raw) return { darkMode: false, accentColor: "#6366f1" };
+    const parsed = JSON.parse(raw);
+    return {
+      darkMode: !!parsed.darkMode,
+      accentColor: parsed.accentColor || "#6366f1",
+    };
+  } catch {
+    return { darkMode: false, accentColor: "#6366f1" };
+  }
+};
+
+const buildTheme = (darkMode = false, accentColor = "#6366f1") => createTheme({
   palette: {
-    mode: "light",
+    mode: darkMode ? "dark" : "light",
     primary: {
-      main: "#6366f1", // Modern indigo
-      light: "#818cf8",
-      dark: "#4f46e5",
+      main: accentColor,
       contrastText: "#ffffff",
     },
     secondary: {
@@ -268,6 +282,24 @@ const theme = createTheme({
 });
 
 function App() {
+  const [themeSettings, setThemeSettings] = useState(() => readThemeSettings());
+
+  // Re-read settings whenever localStorage changes (e.g., from Settings page)
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === ERP_SETTINGS_KEY || !e.key) {
+        setThemeSettings(readThemeSettings());
+      }
+    };
+    window.addEventListener("storage", handler);
+    return () => window.removeEventListener("storage", handler);
+  }, []);
+
+  const theme = useMemo(
+    () => buildTheme(themeSettings.darkMode, themeSettings.accentColor),
+    [themeSettings]
+  );
+
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />

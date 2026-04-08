@@ -701,6 +701,10 @@ const PurchaseOrders = () => {
             <Typography variant="h6" gutterBottom>
               Order Lines
             </Typography>
+            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+              Leave SKU empty to enter a manual line (category, GSM, quality, width, rate, and quantities).
+              Select a SKU to pull details from master data.
+            </Typography>
 
             <TableContainer component={Paper}>
               <Table size="small">
@@ -725,6 +729,8 @@ const PurchaseOrders = () => {
                     const rawSkuId = watchLines?.[index]?.skuId;
                     const lineSkuId = rawSkuId?._id?.toString() || rawSkuId?.toString() || "";
                     const hasSkuSelected = !!lineSkuId;
+                    /** Manual line: no master SKU — user types category/GSM/quality/width and rate. */
+                    const isManualLine = !hasSkuSelected;
                     const supplierSelected = !!getValues("supplierId");
                     const supplierRate = hasSkuSelected
                       ? supplierBaseRates.find((br) => {
@@ -767,7 +773,17 @@ const PurchaseOrders = () => {
                           name={`lines.${index}.categoryName`}
                           control={control}
                           render={({ field }) => (
-                            <TextField {...field} size="small" disabled />
+                            <TextField
+                              {...field}
+                              size="small"
+                              disabled={hasSkuSelected}
+                              placeholder={isManualLine ? "e.g. Sublimation" : ""}
+                              title={
+                                isManualLine
+                                  ? "Manual line: type category, or pick a SKU above to use master data."
+                                  : "From SKU master"
+                              }
+                            />
                           )}
                         />
                       </TableCell>
@@ -776,7 +792,13 @@ const PurchaseOrders = () => {
                           name={`lines.${index}.gsm`}
                           control={control}
                           render={({ field }) => (
-                            <TextField {...field} size="small" disabled />
+                            <TextField
+                              {...field}
+                              size="small"
+                              disabled={hasSkuSelected}
+                              placeholder={isManualLine ? "GSM" : ""}
+                              title={isManualLine ? "Manual GSM" : "From SKU master"}
+                            />
                           )}
                         />
                       </TableCell>
@@ -785,7 +807,13 @@ const PurchaseOrders = () => {
                           name={`lines.${index}.qualityName`}
                           control={control}
                           render={({ field }) => (
-                            <TextField {...field} size="small" disabled />
+                            <TextField
+                              {...field}
+                              size="small"
+                              disabled={hasSkuSelected}
+                              placeholder={isManualLine ? "Quality" : ""}
+                              title={isManualLine ? "Manual quality" : "From SKU master"}
+                            />
                           )}
                         />
                       </TableCell>
@@ -794,17 +822,38 @@ const PurchaseOrders = () => {
                           name={`lines.${index}.widthInches`}
                           control={control}
                           render={({ field }) => (
-                            <TextField {...field} size="small" disabled />
+                            <TextField
+                              {...field}
+                              type="number"
+                              size="small"
+                              disabled={hasSkuSelected}
+                              placeholder={isManualLine ? "Width" : ""}
+                              title={isManualLine ? "Manual width (inches)" : "From SKU master"}
+                              inputProps={{ min: 0, step: "any" }}
+                            />
                           )}
                         />
                       </TableCell>
 
-                      {/* Base Rate: always editable when a SKU is selected.
-                          A warning icon appears when no supplier base rate exists;
-                          clicking it opens the inline flow to save a base rate. */}
+                      {/* Base Rate: editable for manual lines; for SKU lines, optional supplier base-rate save flow */}
                       <TableCell sx={{ minWidth: 160 }}>
-                        {!hasSkuSelected ? (
-                          <Typography variant="body2" color="text.disabled">—</Typography>
+                        {isManualLine ? (
+                          <Controller
+                            name={`lines.${index}.ratePerRoll`}
+                            control={control}
+                            render={({ field }) => (
+                              <NumericFormat
+                                {...field}
+                                customInput={TextField}
+                                size="small"
+                                thousandSeparator=","
+                                decimalScale={2}
+                                sx={{ width: 110 }}
+                                placeholder="Rate"
+                                title="Rate per roll for this manual line"
+                              />
+                            )}
+                          />
                         ) : addingRateForLine === index ? (
                           <Stack direction="row" spacing={0.5} alignItems="center">
                             <TextField

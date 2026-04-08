@@ -2,7 +2,7 @@
 import api from "./api";
 
 const accountingService = {
-  // Payments
+  // ── Payments ──────────────────────────────────────────────────────────────
   getPayments: async (params = {}) => {
     return await api.get("/payments", { params });
   },
@@ -19,7 +19,7 @@ const accountingService = {
     return await api.post(`/payments/${id}/post`);
   },
 
-  // Ledgers
+  // ── Ledgers ───────────────────────────────────────────────────────────────
   getLedgers: async (params = {}) => {
     return await api.get("/ledgers", { params });
   },
@@ -36,11 +36,22 @@ const accountingService = {
     return await api.put(`/ledgers/${id}`, data);
   },
 
+  // Ledger statement — transactions for a given ledger + optional date range
   getLedgerTransactions: async (id, params = {}) => {
     return await api.get(`/ledgers/${id}/transactions`, { params });
   },
 
-  // Vouchers
+  // Alias used by Ledgers.js; delegates to the transactions endpoint
+  getLedgerEntries: async (id, params = {}) => {
+    return await api.get(`/ledgers/${id}/transactions`, { params });
+  },
+
+  // Running balance summary for a ledger
+  getLedgerBalance: async (id, params = {}) => {
+    return await api.get(`/ledgers/${id}/balance`, { params });
+  },
+
+  // ── Vouchers ──────────────────────────────────────────────────────────────
   getVouchers: async (params = {}) => {
     return await api.get("/vouchers", { params });
   },
@@ -51,6 +62,14 @@ const accountingService = {
 
   createVoucher: async (data) => {
     return await api.post("/vouchers", data);
+  },
+
+  updateVoucher: async (id, data) => {
+    return await api.put(`/vouchers/${id}`, data);
+  },
+
+  deleteVoucher: async (id) => {
+    return await api.delete(`/vouchers/${id}`);
   },
 
   postVoucher: async (id) => {

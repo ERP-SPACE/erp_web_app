@@ -34,6 +34,16 @@ const salesService = {
     return await api.post(`/sales-orders/${id}/cancel`);
   },
 
+  // Compute pricing for given SO lines without saving
+  calculatePricing: async (data) => {
+    return await api.post("/sales-orders/calculate-pricing", data);
+  },
+
+  // Preview roll allocation against current inventory without saving
+  previewAllocation: async (data) => {
+    return await api.post("/sales-orders/preview-allocation", data);
+  },
+
   // Delivery Challans
   getDeliveryChallans: async (params = {}) => {
     return await api.get("/delivery-challans", { params });

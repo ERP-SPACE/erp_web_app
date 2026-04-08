@@ -1033,10 +1033,27 @@ const PurchaseInvoices = () => {
       const invoiceData = {
         ...data,
         ...totals,
-        purchaseOrderId: primaryPurchaseOrderId,
+        purchaseOrderId: primaryPurchaseOrderId || null,
         supplierName: supplierInfo.name || data.supplierName || "",
         lines: filteredLines,
       };
+
+      if (!selectedInvoice && !primaryPurchaseOrderId) {
+        if (!data.supplierId) {
+          showNotification(
+            "Select a supplier for a direct purchase invoice (no purchase order).",
+            "error"
+          );
+          return;
+        }
+        if (!filteredLines.length) {
+          showNotification(
+            "Add at least one line with rolls, meters, and rate.",
+            "error"
+          );
+          return;
+        }
+      }
 
       if (selectedInvoice) {
         await purchaseService.updatePurchaseInvoice(

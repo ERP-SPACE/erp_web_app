@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Box,
   Button,
@@ -16,12 +16,9 @@ import {
   ListItem,
   ListItemText,
   Divider,
-  Alert,
 } from "@mui/material";
 import {
-  Visibility as ViewIcon,
   History as HistoryIcon,
-  LocalShipping as ShippingIcon,
   Delete as ScrapIcon,
 } from "@mui/icons-material";
 import DataTable from "../../components/common/DataTable";
@@ -38,39 +35,48 @@ import {
 const Rolls = () => {
   const { showNotification, setLoading } = useApp();
   const [rolls, setRolls] = useState([]);
+  const [pagination, setPagination] = useState({ page: 1, limit: 25, total: 0 });
   const [selectedRoll, setSelectedRoll] = useState(null);
   const [rollHistory, setRollHistory] = useState([]);
   const [openDetailDialog, setOpenDetailDialog] = useState(false);
   const [openHistoryDialog, setOpenHistoryDialog] = useState(false);
   const [confirmScrap, setConfirmScrap] = useState(false);
+  const [scrapReason, setScrapReason] = useState("");
   const [filters, setFilters] = useState({
     status: "",
-    skuId: "",
-    supplierId: "",
-    batchId: "",
+    barcode: "",
   });
 
-  useEffect(() => {
-    fetchRolls();
-  }, [filters]);
-
-  const fetchRolls = async () => {
+  const fetchRolls = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await inventoryService.getRolls(filters);
-      const list = response?.data || response?.rolls || response || [];
-      setRolls(list);
+      const params = {
+        ...filters,
+        page: pagination.page,
+        limit: pagination.limit,
+      };
+      const response = await inventoryService.getRolls(params);
+      // rollController returns { success, rolls: [...], pagination: {...} }
+      setRolls(response?.rolls || response?.data || []);
+      if (response?.pagination) {
+        setPagination((prev) => ({ ...prev, ...response.pagination }));
+      }
     } catch (error) {
       showNotification("Failed to fetch rolls", "error");
     } finally {
       setLoading(false);
     }
-  };
+  }, [filters, pagination.page, pagination.limit, showNotification, setLoading]);
+
+  useEffect(() => {
+    fetchRolls();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters, pagination.page]);
 
   const handleView = async (row) => {
     try {
       const response = await inventoryService.getRoll(row._id);
-      setSelectedRoll(response.data || response);
+      setSelectedRoll(response?.data || response);
       setOpenDetailDialog(true);
     } catch (error) {
       showNotification("Failed to fetch roll details", "error");
@@ -80,7 +86,7 @@ const Rolls = () => {
   const handleHistory = async (row) => {
     try {
       const response = await inventoryService.getRollHistory(row._id);
-      setRollHistory(response.data || response);
+      setRollHistory(response?.data || response || []);
       setSelectedRoll(row);
       setOpenHistoryDialog(true);
     } catch (error) {
@@ -90,18 +96,21 @@ const Rolls = () => {
 
   const handleScrap = (row) => {
     setSelectedRoll(row);
+    setScrapReason("");
     setConfirmScrap(true);
   };
 
   const confirmScrapRoll = async () => {
     try {
-      await inventoryService.updateRoll(selectedRoll._id, { status: "Scrap" });
+      // Use the dedicated markAsScrap endpoint to run business logic (accounting write-off, etc.)
+      await inventoryService.markAsScrap(selectedRoll._id, { reason: scrapReason || "Scrapped" });
       showNotification("Roll marked as scrap", "success");
       fetchRolls();
     } catch (error) {
-      showNotification("Failed to update roll status", "error");
+      showNotification("Failed to mark roll as scrap", "error");
     }
     setConfirmScrap(false);
+    setScrapReason("");
   };
 
   const columns = [
@@ -114,12 +123,17 @@ const Rolls = () => {
         </Typography>
       ),
     },
+    { field: "barcode", headerName: "Barcode" },
     { field: "batchCode", headerName: "Batch" },
     { field: "categoryName", headerName: "Category" },
     { field: "gsm", headerName: "GSM" },
     { field: "qualityName", headerName: "Quality" },
     { field: "widthInches", headerName: 'Width"' },
-    { field: "lengthMeters", headerName: "Length(m)" },
+    {
+      field: "currentLengthMeters",
+      headerName: "Length (m)",
+      renderCell: (params) => formatNumber(params.value ?? params.row?.originalLengthMeters),
+    },
     { field: "supplierName", headerName: "Supplier" },
     {
       field: "status",
@@ -128,17 +142,14 @@ const Rolls = () => {
         <Chip
           label={params.value}
           size="small"
-          sx={{
-            backgroundColor: getRollStatusColor(params.value),
-            color: "white",
-          }}
+          sx={{ backgroundColor: getRollStatusColor(params.value), color: "white" }}
         />
       ),
     },
     {
-      field: "createdAt",
-      headerName: "Created",
-      renderCell: (params) => formatDate(params.value),
+      field: "inwardedAt",
+      headerName: "Inwarded",
+      renderCell: (params) => formatDate(params.value || params.row?.createdAt),
     },
   ];
 
@@ -158,13 +169,14 @@ const Rolls = () => {
 
   return (
     <Box>
+      {/* Filters */}
       <Paper sx={{ p: 2, mb: 2 }}>
         <Grid container spacing={2}>
           <Grid item xs={12} md={3}>
             <TextField
               select
               fullWidth
-              label="Status Filter"
+              label="Status"
               value={filters.status}
               onChange={(e) =>
                 setFilters({ ...filters, status: e.target.value })
@@ -179,6 +191,26 @@ const Rolls = () => {
               <MenuItem value="Returned">Returned</MenuItem>
               <MenuItem value="Scrap">Scrap</MenuItem>
             </TextField>
+          </Grid>
+          <Grid item xs={12} md={3}>
+            <TextField
+              fullWidth
+              label="Search by Barcode"
+              value={filters.barcode}
+              onChange={(e) =>
+                setFilters({ ...filters, barcode: e.target.value })
+              }
+              size="small"
+            />
+          </Grid>
+          <Grid item xs={12} md={3}>
+            <Button
+              variant="outlined"
+              onClick={() => setFilters({ status: "", barcode: "" })}
+              size="small"
+            >
+              Clear Filters
+            </Button>
           </Grid>
         </Grid>
       </Paper>
@@ -204,18 +236,12 @@ const Rolls = () => {
           {selectedRoll && (
             <Grid container spacing={2}>
               <Grid item xs={12} md={6}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Roll Number
-                </Typography>
-                <Typography variant="body1" gutterBottom>
-                  {selectedRoll.rollNumber}
-                </Typography>
+                <Typography variant="subtitle2" color="text.secondary">Roll Number</Typography>
+                <Typography variant="body1" gutterBottom>{selectedRoll.rollNumber}</Typography>
               </Grid>
 
               <Grid item xs={12} md={6}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Status
-                </Typography>
+                <Typography variant="subtitle2" color="text.secondary">Status</Typography>
                 <Chip
                   label={selectedRoll.status}
                   size="small"
@@ -231,25 +257,32 @@ const Rolls = () => {
               </Grid>
 
               <Grid item xs={12} md={6}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Product Details
+                <Typography variant="subtitle2" color="text.secondary">Product Details</Typography>
+                <Typography variant="body2">
+                  {selectedRoll.categoryName || "—"} — {selectedRoll.gsm || "—"} GSM — {selectedRoll.qualityName || "—"}
                 </Typography>
                 <Typography variant="body2">
-                  {selectedRoll.categoryName} - {selectedRoll.gsm} GSM -
-                  {selectedRoll.qualityName}
-                </Typography>
-                <Typography variant="body2">
-                  Width: {selectedRoll.widthInches}" | Length:
-                  {selectedRoll.lengthMeters}m
+                  Width: {selectedRoll.widthInches}" | Length: {formatNumber(selectedRoll.currentLengthMeters ?? selectedRoll.originalLengthMeters)}m
                 </Typography>
               </Grid>
 
               <Grid item xs={12} md={6}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Cost Information
+                <Typography variant="subtitle2" color="text.secondary">Barcode</Typography>
+                <Typography variant="body2" sx={{ fontFamily: "monospace" }}>
+                  {selectedRoll.barcode || "Not generated"}
+                </Typography>
+              </Grid>
+
+              <Grid item xs={12} md={6}>
+                <Typography variant="subtitle2" color="text.secondary">Cost Information</Typography>
+                <Typography variant="body2">
+                  Base Cost/m: {formatCurrency(selectedRoll.baseCostPerMeter || 0)}
                 </Typography>
                 <Typography variant="body2">
-                  Landed Cost: {formatCurrency(selectedRoll.landedCostPerRoll)}
+                  Landed Cost/m: {formatCurrency(selectedRoll.landedCostPerMeter || 0)}
+                </Typography>
+                <Typography variant="body2">
+                  Total Landed Cost: {formatCurrency(selectedRoll.totalLandedCost || 0)}
                 </Typography>
               </Grid>
 
@@ -258,76 +291,85 @@ const Rolls = () => {
               </Grid>
 
               <Grid item xs={12} md={6}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Source Information
+                <Typography variant="subtitle2" color="text.secondary">Source Information</Typography>
+                <Typography variant="body2">
+                  Supplier: {selectedRoll.supplierName || selectedRoll.supplierId?.name || "—"}
                 </Typography>
                 <Typography variant="body2">
-                  Supplier: {selectedRoll.supplierName}
+                  Batch: {selectedRoll.batchCode || selectedRoll.batchId?.batchCode || "—"}
                 </Typography>
                 <Typography variant="body2">
-                  Batch: {selectedRoll.batchCode}
-                </Typography>
-                <Typography variant="body2">
-                  PO: {selectedRoll.poNumber}
+                  Purchase Invoice: {selectedRoll.purchaseInvoiceId?.piNumber || selectedRoll.purchaseInvoiceId || "—"}
                 </Typography>
               </Grid>
 
               <Grid item xs={12} md={6}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Allocation Information
-                </Typography>
-                {selectedRoll.allocatedToSOId ? (
+                <Typography variant="subtitle2" color="text.secondary">Allocation Information</Typography>
+                {selectedRoll.allocationDetails?.soLineId ? (
                   <>
                     <Typography variant="body2">
-                      SO: {selectedRoll.soNumber}
+                      SO: {selectedRoll.allocationDetails.soId?.soNumber || selectedRoll.allocationDetails.soId || "—"}
                     </Typography>
                     <Typography variant="body2">
-                      Customer: {selectedRoll.customerName}
+                      Allocated at: {formatDate(selectedRoll.allocationDetails.allocatedAt)}
                     </Typography>
                   </>
                 ) : (
-                  <Typography variant="body2" color="text.secondary">
-                    Not allocated
-                  </Typography>
+                  <Typography variant="body2" color="text.secondary">Not allocated</Typography>
                 )}
               </Grid>
+
+              {selectedRoll.returnDetails?.returnReason && (
+                <>
+                  <Grid item xs={12}>
+                    <Divider sx={{ my: 1 }} />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <Typography variant="subtitle2" color="text.secondary">Return Information</Typography>
+                    <Typography variant="body2">Reason: {selectedRoll.returnDetails.returnReason}</Typography>
+                    {selectedRoll.returnDetails.returnedAt && (
+                      <Typography variant="body2">Returned: {formatDate(selectedRoll.returnDetails.returnedAt)}</Typography>
+                    )}
+                  </Grid>
+                </>
+              )}
 
               <Grid item xs={12}>
                 <Divider sx={{ my: 1 }} />
               </Grid>
 
               <Grid item xs={12}>
-                <Typography variant="subtitle2" color="text.secondary">
-                  Timeline
-                </Typography>
+                <Typography variant="subtitle2" color="text.secondary">Timeline</Typography>
                 <List dense>
                   <ListItem>
-                    <ListItemText
-                      primary="Created"
-                      secondary={formatDate(selectedRoll.createdAt)}
-                    />
+                    <ListItemText primary="Inwarded" secondary={formatDate(selectedRoll.inwardedAt || selectedRoll.createdAt)} />
                   </ListItem>
                   {selectedRoll.mappedAt && (
                     <ListItem>
-                      <ListItemText
-                        primary="Mapped"
-                        secondary={formatDate(selectedRoll.mappedAt)}
-                      />
+                      <ListItemText primary="Mapped" secondary={formatDate(selectedRoll.mappedAt)} />
                     </ListItem>
                   )}
-                  {selectedRoll.allocatedAt && (
+                  {selectedRoll.allocationDetails?.allocatedAt && (
                     <ListItem>
                       <ListItemText
                         primary="Allocated"
-                        secondary={formatDate(selectedRoll.allocatedAt)}
+                        secondary={formatDate(selectedRoll.allocationDetails.allocatedAt)}
                       />
                     </ListItem>
                   )}
-                  {selectedRoll.dispatchedAt && (
+                  {selectedRoll.dispatchDetails?.dispatchedAt && (
                     <ListItem>
                       <ListItemText
                         primary="Dispatched"
-                        secondary={formatDate(selectedRoll.dispatchedAt)}
+                        secondary={formatDate(selectedRoll.dispatchDetails.dispatchedAt)}
+                      />
+                    </ListItem>
+                  )}
+                  {selectedRoll.returnDetails?.returnedAt && (
+                    <ListItem>
+                      <ListItemText
+                        primary="Returned"
+                        secondary={formatDate(selectedRoll.returnDetails.returnedAt)}
                       />
                     </ListItem>
                   )}
@@ -348,29 +390,33 @@ const Rolls = () => {
         maxWidth="md"
         fullWidth
       >
-        <DialogTitle>Roll History - {selectedRoll?.rollNumber}</DialogTitle>
+        <DialogTitle>Roll History — {selectedRoll?.rollNumber}</DialogTitle>
         <DialogContent>
           <List>
-            {rollHistory.map((event, index) => (
-              <React.Fragment key={index}>
-                <ListItem>
-                  <ListItemText
-                    primary={event.action}
-                    secondary={
-                      <>
-                        <Typography variant="caption" display="block">
-                          {formatDate(event.timestamp)}
-                        </Typography>
-                        <Typography variant="caption">
-                          {event.details}
-                        </Typography>
-                      </>
-                    }
-                  />
-                </ListItem>
-                {index < rollHistory.length - 1 && <Divider />}
-              </React.Fragment>
-            ))}
+            {rollHistory.length === 0 ? (
+              <ListItem>
+                <ListItemText primary="No history available" />
+              </ListItem>
+            ) : (
+              rollHistory.map((event, index) => (
+                <React.Fragment key={index}>
+                  <ListItem>
+                    <ListItemText
+                      primary={event.action}
+                      secondary={
+                        <>
+                          <Typography variant="caption" display="block">
+                            {formatDate(event.timestamp)}
+                          </Typography>
+                          <Typography variant="caption">{event.details}</Typography>
+                        </>
+                      }
+                    />
+                  </ListItem>
+                  {index < rollHistory.length - 1 && <Divider />}
+                </React.Fragment>
+              ))
+            )}
           </List>
         </DialogContent>
         <DialogActions>
@@ -378,12 +424,27 @@ const Rolls = () => {
         </DialogActions>
       </Dialog>
 
+      {/* Scrap Confirmation */}
       <ConfirmDialog
         open={confirmScrap}
         onClose={() => setConfirmScrap(false)}
         onConfirm={confirmScrapRoll}
         title="Mark as Scrap"
-        message={`Are you sure you want to mark roll ${selectedRoll?.rollNumber} as scrap?`}
+        message={
+          <Box>
+            <Typography gutterBottom>
+              Are you sure you want to mark roll <strong>{selectedRoll?.rollNumber}</strong> as scrap?
+            </Typography>
+            <TextField
+              fullWidth
+              label="Reason (optional)"
+              value={scrapReason}
+              onChange={(e) => setScrapReason(e.target.value)}
+              size="small"
+              sx={{ mt: 1 }}
+            />
+          </Box>
+        }
         confirmColor="error"
       />
     </Box>

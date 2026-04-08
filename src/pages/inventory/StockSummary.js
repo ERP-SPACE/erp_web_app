@@ -14,6 +14,7 @@ import {
   Inventory as InventoryIcon,
   TrendingUp as TrendingUpIcon,
   Category as CategoryIcon,
+  StraightenOutlined as MetersIcon,
 } from "@mui/icons-material";
 import DataTable from "../../components/common/DataTable";
 import { useApp } from "../../contexts/AppContext";
@@ -25,6 +26,7 @@ const StockSummary = () => {
   const [stockData, setStockData] = useState([]);
   const [summary, setSummary] = useState({
     totalRolls: 0,
+    totalMeters: 0,
     totalValue: 0,
     totalCategories: 0,
   });
@@ -78,10 +80,11 @@ const StockSummary = () => {
       const derivedSummary = normalizedItems.reduce(
         (acc, row) => {
           acc.totalRolls += row.totalRolls || 0;
+          acc.totalMeters += row.totalLengthMeters || 0;
           acc.totalValue += row.totalValue || 0;
           return acc;
         },
-        { totalRolls: 0, totalValue: 0, totalCategories: normalizedItems.length }
+        { totalRolls: 0, totalMeters: 0, totalValue: 0, totalCategories: normalizedItems.length }
       );
 
       setStockData(normalizedItems);
@@ -127,7 +130,7 @@ const StockSummary = () => {
     },
     {
       field: "avgCostPerRoll",
-      headerName: "Avg Cost/Meter",
+      headerName: "Avg Cost/Roll",
       renderCell: (params) => formatCurrency(params.value),
     },
     {
@@ -147,19 +150,22 @@ const StockSummary = () => {
       title: "Total Rolls",
       value: formatNumber(summary.totalRolls),
       icon: <InventoryIcon sx={{ fontSize: 40, color: "primary.main" }} />,
-      color: "#1976d2",
+    },
+    {
+      title: "Total Meters",
+      value: `${formatNumber(summary.totalMeters, 0)} m`,
+      icon: <MetersIcon sx={{ fontSize: 40, color: "info.main" }} />,
     },
     {
       title: "Total Value",
       value: formatCurrency(summary.totalValue),
       icon: <TrendingUpIcon sx={{ fontSize: 40, color: "success.main" }} />,
-      color: "#2e7d32",
     },
     {
       title: "SKU Varieties",
-      value: formatNumber(summary.totalCategories || stockData.length),
+      // Use distinct SKU count from API if available; fall back to row count
+      value: formatNumber(summary.distinctSKUs || summary.totalCategories || stockData.length),
       icon: <CategoryIcon sx={{ fontSize: 40, color: "warning.main" }} />,
-      color: "#ed6c02",
     },
   ];
 
@@ -168,7 +174,7 @@ const StockSummary = () => {
       {/* Summary Cards */}
       <Grid container spacing={3} sx={{ mb: 3 }}>
         {summaryCards.map((card, index) => (
-          <Grid item xs={12} md={4} key={index}>
+          <Grid item xs={12} md={3} key={index}>
             <Card>
               <CardContent>
                 <Box sx={{ display: "flex", alignItems: "center", mb: 2 }}>
@@ -212,13 +218,12 @@ const StockSummary = () => {
       </Paper>
 
       {/* Stock Summary Table */}
+      {/* No onAdd/onEdit/onDelete: DataTable only shows those buttons when callbacks are provided */}
       <DataTable
         title="Stock Summary by SKU"
         columns={columns}
         rows={stockData}
         hideAddButton
-        hideEditButton
-        hideDeleteButton
       />
     </Box>
   );

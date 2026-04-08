@@ -65,6 +65,8 @@ const loadSettings = () => {
 
 const saveSettings = (settings) => {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  // Notify App.js (and any listener) that theme settings changed
+  window.dispatchEvent(new StorageEvent("storage", { key: STORAGE_KEY }));
 };
 
 // ─── Sidebar navigation groups ────────────────────────────────────────────────

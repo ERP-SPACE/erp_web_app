@@ -47,7 +47,8 @@ const UnmappedRolls = () => {
     setLoading(true);
     try {
       const response = await inventoryService.getUnmappedRolls();
-      setUnmappedRolls(response.data);
+      // API returns { success, count, data: [...] }; api.js already unwraps to the body
+      setUnmappedRolls(Array.isArray(response) ? response : response?.data || []);
     } catch (error) {
       showNotification("Failed to fetch unmapped rolls", "error");
     } finally {
@@ -57,8 +58,9 @@ const UnmappedRolls = () => {
 
   const fetchSKUs = async () => {
     try {
+      // masterService.getSKUs returns { skus: [...], pagination: {} }
       const response = await masterService.getSKUs({ active: true });
-      setSKUs(response.data);
+      setSKUs(response.skus || []);
     } catch (error) {
       console.error("Failed to fetch SKUs:", error);
     }
@@ -81,13 +83,31 @@ const UnmappedRolls = () => {
     }
   };
 
+  // Helper to extract display names from a (possibly populated) SKU object
+  const getSkuDisplayNames = (sku) => {
+    if (!sku) return { categoryName: "", gsm: "", qualityName: "" };
+    const product = sku.productId;
+    return {
+      // SKU model doesn't have these fields directly — they come from populated Product refs
+      categoryName:
+        product?.categoryId?.name || product?.category?.name || sku.categoryName || "",
+      gsm:
+        product?.gsmId?.value?.toString() ||
+        product?.gsmId?.name ||
+        product?.gsm?.name ||
+        sku.gsm ||
+        "",
+      qualityName:
+        product?.qualityId?.name || product?.quality?.name || sku.qualityName || "",
+    };
+  };
+
   const handleBulkMap = () => {
     if (selectedRolls.length === 0) {
       showNotification("Please select rolls to map", "warning");
       return;
     }
 
-    // Initialize mapping data for selected rolls
     const initialMapping = {};
     selectedRolls.forEach((rollId) => {
       const roll = unmappedRolls.find((r) => r._id === rollId);
@@ -95,8 +115,12 @@ const UnmappedRolls = () => {
         initialMapping[rollId] = {
           rollNumber: roll.rollNumber,
           skuId: "",
-          widthInches: "",
-          lengthMeters: roll.lengthMeters || 0,
+          widthInches: roll.widthInches || "",
+          // Use currentLengthMeters first, fall back to originalLengthMeters
+          lengthMeters: roll.currentLengthMeters ?? roll.originalLengthMeters ?? 0,
+          categoryName: "",
+          gsm: roll.gsm || "",
+          qualityName: roll.qualityName || roll.qualityGrade || "",
         };
       }
     });
@@ -108,15 +132,14 @@ const UnmappedRolls = () => {
   const handleSKUChange = (rollId, skuId) => {
     const sku = skus.find((s) => s._id === skuId);
     if (sku) {
+      const names = getSkuDisplayNames(sku);
       setMappingData((prev) => ({
         ...prev,
         [rollId]: {
           ...prev[rollId],
           skuId,
           widthInches: sku.widthInches,
-          categoryName: sku.categoryName,
-          gsm: sku.gsm,
-          qualityName: sku.qualityName,
+          ...names,
         },
       }));
     }
@@ -130,7 +153,8 @@ const UnmappedRolls = () => {
         lengthMeters: data.lengthMeters,
       }));
 
-      await inventoryService.bulkMapRolls({ mappings });
+      // mapUnmappedRolls is the correct method name in inventoryService
+      await inventoryService.mapUnmappedRolls(mappings);
       showNotification(
         `Successfully mapped ${mappings.length} rolls`,
         "success"
@@ -170,12 +194,21 @@ const UnmappedRolls = () => {
       ),
     },
     { field: "rollNumber", headerName: "Roll Number" },
+    { field: "gsm", headerName: "GSM" },
+    { field: "qualityName", headerName: "Quality" },
+    { field: "widthInches", headerName: 'Width"' },
+    {
+      field: "currentLengthMeters",
+      headerName: "Length (m)",
+      renderCell: (params) =>
+        params.value ?? params.row?.originalLengthMeters ?? "—",
+    },
     { field: "supplierName", headerName: "Supplier", flex: 1 },
     { field: "batchCode", headerName: "Batch" },
     {
-      field: "createdAt",
-      headerName: "Created",
-      renderCell: (params) => formatDate(params.value),
+      field: "inwardedAt",
+      headerName: "Inwarded",
+      renderCell: (params) => formatDate(params.value || params.row?.createdAt),
     },
   ];
 

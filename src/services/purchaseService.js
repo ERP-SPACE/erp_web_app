@@ -71,6 +71,23 @@ const purchaseService = {
   createBatch: async (data) => {
     return await api.post("/batches", data);
   },
+
+  // GRNs (Goods Received Notes)
+  getGRNs: async (params = {}) => {
+    return await api.get("/grns", { params });
+  },
+
+  getGRN: async (id) => {
+    return await api.get(`/grns/${id}`);
+  },
+
+  createGRN: async (data) => {
+    return await api.post("/grns", data);
+  },
+
+  postGRN: async (id) => {
+    return await api.post(`/grns/${id}/post`);
+  },
 };
 
 export default purchaseService;
