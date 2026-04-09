@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
+  CircularProgress,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -15,11 +17,9 @@ import {
   Switch,
   Chip,
   FormControl,
-  InputLabel,
-  Select,
   MenuItem,
-  OutlinedInput,
   Divider,
+  InputAdornment,
   Table,
   TableHead,
   TableRow,
@@ -37,6 +37,8 @@ import {
 import {
   Add as AddIcon,
   Delete as DeleteIcon,
+  Edit as EditIcon,
+  History as HistoryIcon,
   ToggleOn as ToggleOnIcon,
   ToggleOff as ToggleOffIcon,
   UploadFile as UploadFileIcon,
@@ -47,6 +49,7 @@ import { useForm, Controller } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import masterService from "../../services/masterService";
 import {
@@ -87,12 +90,11 @@ const defaultFormValues = {
     pincode: "",
   },
   targetSalesMeters: 0,
-  defaultRate: 0,
+  defaultSkuRates: [],
   defaultCreditLimit: 0,
   defaultCreditDays: 0,
   blockNewSalesForAllParties: false,
   blockNewDeliveriesForAllParties: false,
-  blockedSalesCustomers: [],
   blockedDeliveryCustomers: [],
   customers: [],
   notes: "",
@@ -114,10 +116,20 @@ const TabPanel = ({ children, value, index }) => {
 const generateLocalId = () =>
   `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+const normalizeEntityId = (value) => {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    return value._id || value.id || value.value || "";
+  }
+  return "";
+};
+
 const Agents = () => {
   const { showNotification, setLoading } = useApp();
   const [agents, setAgents] = useState([]);
   const [customers, setCustomers] = useState([]);
+  const [skus, setSkus] = useState([]);
   const [selectedAgent, setSelectedAgent] = useState(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [tabIndex, setTabIndex] = useState(0);
@@ -136,6 +148,7 @@ const Agents = () => {
     applyByDefault: true,
     effectiveFrom: getDateInputValue(new Date()),
     notes: "",
+    isEditing: false,
   });
   const [payoutDialogOpen, setPayoutDialogOpen] = useState(false);
   const [payoutForm, setPayoutForm] = useState({
@@ -159,6 +172,14 @@ const Agents = () => {
   const [localPartyCommissions, setLocalPartyCommissions] = useState([]);
   const [localCommissionPayouts, setLocalCommissionPayouts] = useState([]);
   const [localKycDocuments, setLocalKycDocuments] = useState([]);
+  const [selectedDefaultSkuId, setSelectedDefaultSkuId] = useState("");
+  const [defaultSkuRateValue, setDefaultSkuRateValue] = useState("");
+  const [editingDefaultSkuRateIndex, setEditingDefaultSkuRateIndex] =
+    useState(null);
+  const [rateHistoryDialogOpen, setRateHistoryDialogOpen] = useState(false);
+  const [rateHistory, setRateHistory] = useState([]);
+  const [loadingRateHistory, setLoadingRateHistory] = useState(false);
+  const [rateHistorySku, setRateHistorySku] = useState(null);
 
   const {
     control,
@@ -172,7 +193,11 @@ const Agents = () => {
   });
 
   const watchManagedCustomers = watch("customers");
-  const watchBlockedCustomers = watch("blockedSalesCustomers");
+  const watchedDefaultSkuRates = watch("defaultSkuRates");
+  const watchDefaultSkuRates = useMemo(
+    () => watchedDefaultSkuRates || [],
+    [watchedDefaultSkuRates]
+  );
 
   const watchCommissionType = commissionForm.commissionType;
 
@@ -181,7 +206,7 @@ const Agents = () => {
   }, []);
 
   const fetchInitialData = async () => {
-    await Promise.all([fetchAgents(), fetchCustomers()]);
+    await Promise.all([fetchAgents(), fetchCustomers(), fetchSKUs()]);
   };
 
   const fetchAgents = async (params = {}) => {
@@ -203,6 +228,15 @@ const Agents = () => {
       setCustomers(list);
     } catch (error) {
       console.error("Failed to fetch customers", error);
+    }
+  };
+
+  const fetchSKUs = async () => {
+    try {
+      const res = await masterService.getSKUs({ active: true, limit: 2000 });
+      setSkus(res.skus || []);
+    } catch (error) {
+      console.error("Failed to fetch SKUs", error);
     }
   };
 
@@ -299,6 +333,9 @@ const Agents = () => {
     setLocalPartyCommissions([]);
     setLocalCommissionPayouts([]);
     setLocalKycDocuments([]);
+    setSelectedDefaultSkuId("");
+    setDefaultSkuRateValue("");
+    setEditingDefaultSkuRateIndex(null);
     setTabIndex(0);
     setDialogOpen(true);
   };
@@ -316,15 +353,16 @@ const Agents = () => {
       pincode: agent.address?.pincode || "",
     },
     targetSalesMeters: agent.targetSalesMeters || 0,
-    defaultRate: agent.defaultRate || 0,
+    defaultSkuRates: (agent.defaultSkuRates || []).map((entry) => ({
+      sku: normalizeEntityId(entry.sku),
+      rate: entry.rate || 0,
+      notes: entry.notes || "",
+    })),
     defaultCreditLimit: agent.defaultCreditLimit || 0,
     defaultCreditDays: agent.defaultCreditDays || 0,
     blockNewSalesForAllParties: agent.blockNewSalesForAllParties || false,
     blockNewDeliveriesForAllParties:
       agent.blockNewDeliveriesForAllParties || false,
-    blockedSalesCustomers: (agent.blockedSalesCustomers || []).map((customer) =>
-      typeof customer === "string" ? customer : customer?._id || ""
-    ),
     blockedDeliveryCustomers: (agent.blockedDeliveryCustomers || []).map(
       (customer) =>
         typeof customer === "string" ? customer : customer?._id || ""
@@ -358,6 +396,9 @@ const Agents = () => {
       setLocalPartyCommissions([]);
       setLocalCommissionPayouts([]);
       setLocalKycDocuments([]);
+      setSelectedDefaultSkuId("");
+      setDefaultSkuRateValue("");
+      setEditingDefaultSkuRateIndex(null);
       reset(mapAgentToForm(agent));
       setTabIndex(0);
       setDialogOpen(true);
@@ -373,6 +414,18 @@ const Agents = () => {
     const parsed = Number(value);
     return Number.isNaN(parsed) ? undefined : parsed;
   };
+
+  const buildDefaultPartyCommission = (customerId) => ({
+    customer: customerId,
+    commissionType: "per_meter",
+    amountPerMeter: 0,
+    applyByDefault: true,
+    effectiveFrom: getDateInputValue(new Date()),
+    notes: "Auto-created default commission when customer was assigned to agent",
+  });
+
+  const getCommissionCustomerIds = (commissionEntries = []) =>
+    (commissionEntries || []).map((entry) => normalizeEntityId(entry.customer));
 
   const syncAgentToCustomers = async (agentData, customerIds) => {
     const ids = (customerIds || [])
@@ -416,17 +469,55 @@ const Agents = () => {
     const payload = {
       ...formData,
       targetSalesMeters: sanitizeNumber(formData.targetSalesMeters) || 0,
-      defaultRate: sanitizeNumber(formData.defaultRate) || 0,
+      defaultSkuRates: (formData.defaultSkuRates || [])
+        .map((entry) => ({
+          sku: normalizeEntityId(entry.sku),
+          rate: sanitizeNumber(entry.rate) || 0,
+          notes: entry.notes || "",
+        }))
+        .filter((entry) => entry.sku),
       defaultCreditLimit: sanitizeNumber(formData.defaultCreditLimit) || 0,
       defaultCreditDays: sanitizeNumber(formData.defaultCreditDays) || 0,
       customers: (formData.customers || []).filter(Boolean),
-      blockedSalesCustomers: (formData.blockedSalesCustomers || []).filter(
-        Boolean
-      ),
       blockedDeliveryCustomers: (
         formData.blockedDeliveryCustomers || []
       ).filter(Boolean),
     };
+
+    const customerIds = payload.customers.map((id) => normalizeEntityId(id));
+    const previousCustomerIds = selectedAgent
+      ? (selectedAgent.customers || []).map((id) => normalizeEntityId(id))
+      : [];
+    const newlyAssignedCustomerIds = selectedAgent
+      ? customerIds.filter((customerId) => !previousCustomerIds.includes(customerId))
+      : [];
+
+    const existingCommissionIds = selectedAgent
+      ? getCommissionCustomerIds(selectedAgent.partyCommissions)
+      : getCommissionCustomerIds(localPartyCommissions);
+    const customersMissingCommission = customerIds.filter(
+      (customerId) => !existingCommissionIds.includes(customerId)
+    );
+
+    if (!selectedAgent) {
+      const payloadPartyCommissions = [
+        ...(localPartyCommissions || []).map((commission) => ({
+          ...commission,
+          customer: normalizeEntityId(commission.customer),
+        })),
+      ];
+      customersMissingCommission.forEach((customerId) => {
+        if (!payloadPartyCommissions.some(
+          (entry) => normalizeEntityId(entry.customer) === customerId
+        )) {
+          payloadPartyCommissions.push(buildDefaultPartyCommission(customerId));
+        }
+      });
+
+      if (payloadPartyCommissions.length) {
+        payload.partyCommissions = payloadPartyCommissions;
+      }
+    }
 
     setLoading(true);
     let savedAgent = selectedAgent;
@@ -446,6 +537,32 @@ const Agents = () => {
         showNotification("Agent created successfully", "success");
       }
       await syncAgentToCustomers(savedAgent, payload.customers);
+
+      if (selectedAgent && newlyAssignedCustomerIds.length > 0) {
+        const commissionCustomerIds = getCommissionCustomerIds(
+          selectedAgent.partyCommissions
+        );
+        const commissionCustomersToCreate = newlyAssignedCustomerIds.filter(
+          (customerId) => !commissionCustomerIds.includes(customerId)
+        );
+
+        if (commissionCustomersToCreate.length) {
+          const commissionResponses = await Promise.all(
+            commissionCustomersToCreate.map((customerId) =>
+              masterService.upsertAgentPartyCommission(
+                savedAgent._id,
+                buildDefaultPartyCommission(customerId)
+              )
+            )
+          );
+          
+          // Update selectedAgent with the latest agent data from the last response
+          if (commissionResponses.length > 0) {
+            setSelectedAgent(commissionResponses[commissionResponses.length - 1]);
+          }
+        }
+      }
+
       setDialogOpen(false);
       fetchAgents();
     } catch (error) {
@@ -487,6 +604,32 @@ const Agents = () => {
       applyByDefault: true,
       effectiveFrom: getDateInputValue(new Date()),
       notes: "",
+      isEditing: false,
+    });
+    setCommissionDialogOpen(true);
+  };
+
+  const handleEditCommission = (commission) => {
+    setCommissionForm({
+      customerId: normalizeEntityId(commission.customer),
+      commissionType: commission.commissionType || "per_meter",
+      amountPerMeter:
+        commission.commissionType === "per_meter"
+          ? commission.amountPerMeter
+          : "",
+      percentage:
+        commission.commissionType === "percentage"
+          ? commission.percentage
+          : "",
+      applyByDefault: commission.applyByDefault || false,
+      effectiveFrom:
+        getDateInputValue(
+          commission.history?.length
+            ? commission.history[commission.history.length - 1]?.effectiveFrom
+            : new Date()
+        ) || getDateInputValue(new Date()),
+      notes: commission.notes || "",
+      isEditing: true,
     });
     setCommissionDialogOpen(true);
   };
@@ -821,42 +964,239 @@ const Agents = () => {
       })),
     [customers]
   );
-
-  const renderCustomerSelect = (field, label, error) => (
-    <FormControl fullWidth>
-      <InputLabel>{label}</InputLabel>
-      <Select
-        {...field}
-        multiple
-        input={<OutlinedInput label={label} />}
-        value={field.value || []}
-        onChange={(event) => field.onChange(event.target.value)}
-        renderValue={(selected) => (
-          <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
-            {(selected || []).map((value) => {
-              const customer = customerMenuItems.find(
-                (item) => item.id === value
-              );
-              return (
-                <Chip
-                  key={value}
-                  label={customer ? customer.label : value}
-                  size="small"
-                />
-              );
-            })}
-          </Box>
-        )}
-        error={error}
-      >
-        {customerMenuItems.map((item) => (
-          <MenuItem key={item.id} value={item.id}>
-            {item.label}
-          </MenuItem>
-        ))}
-      </Select>
-    </FormControl>
+  const customerSelectOptions = useMemo(
+    () => [
+      { value: "", label: "Select customer" },
+      ...customerMenuItems.map((item) => ({ value: item.id, label: item.label })),
+    ],
+    [customerMenuItems]
   );
+  const payoutCustomerOptions = useMemo(
+    () => [
+      { value: "", label: "All customers" },
+      ...customerMenuItems.map((item) => ({ value: item.id, label: item.label })),
+    ],
+    [customerMenuItems]
+  );
+
+  const skuLookup = useMemo(() => {
+    const map = new Map();
+    skus.forEach((sku) => {
+      const id = normalizeEntityId(sku);
+      if (id) map.set(id, sku);
+    });
+    (selectedAgent?.defaultSkuRates || []).forEach((entry) => {
+      const sku = entry?.sku;
+      const id = normalizeEntityId(sku);
+      if (id && typeof sku === "object") {
+        map.set(id, sku);
+      }
+    });
+    return map;
+  }, [skus, selectedAgent]);
+
+  const availableDefaultSkus = useMemo(() => {
+    const currentSkuId = normalizeEntityId(selectedDefaultSkuId);
+    const usedSkuIds = new Set(
+      watchDefaultSkuRates
+        .map((entry, index) =>
+          index === editingDefaultSkuRateIndex ? null : normalizeEntityId(entry.sku)
+        )
+        .filter(Boolean)
+    );
+
+    return skus.filter((sku) => {
+      const skuId = normalizeEntityId(sku);
+      if (!skuId) return false;
+      if (skuId === currentSkuId) return true;
+      return !usedSkuIds.has(skuId);
+    });
+  }, [
+    skus,
+    selectedDefaultSkuId,
+    watchDefaultSkuRates,
+    editingDefaultSkuRateIndex,
+  ]);
+
+  const persistDefaultSkuRates = async (nextRates, successMessage) => {
+    if (!selectedAgent?._id) {
+      setValue("defaultSkuRates", nextRates, {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+      return true;
+    }
+
+    setLoading(true);
+    try {
+      const response = await masterService.updateAgent(selectedAgent._id, {
+        defaultSkuRates: nextRates.map((entry) => ({
+          sku: normalizeEntityId(entry.sku),
+          rate: sanitizeNumber(entry.rate) || 0,
+          notes: entry.notes || "",
+        })),
+      });
+      const agent = response?.data || response;
+      updateAgentList(agent);
+      setValue(
+        "defaultSkuRates",
+        (agent?.defaultSkuRates || nextRates).map((entry) => ({
+          sku: normalizeEntityId(entry.sku),
+          rate: sanitizeNumber(entry.rate) || 0,
+          notes: entry.notes || "",
+        })),
+        {
+          shouldDirty: true,
+          shouldValidate: true,
+        }
+      );
+      showNotification(successMessage, "success");
+      return true;
+    } catch (error) {
+      showNotification(error.message || "Failed to save SKU rate", "error");
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const addOrUpdateDefaultSkuRate = async () => {
+    const skuId = normalizeEntityId(selectedDefaultSkuId);
+    const parsedRate = sanitizeNumber(defaultSkuRateValue);
+
+    if (!skuId) {
+      showNotification("Please select a SKU", "warning");
+      return;
+    }
+    if (parsedRate === undefined || parsedRate < 0) {
+      showNotification("Please enter a valid rate", "warning");
+      return;
+    }
+
+    const existingIndex = watchDefaultSkuRates.findIndex(
+      (entry, index) =>
+        normalizeEntityId(entry.sku) === skuId && index !== editingDefaultSkuRateIndex
+    );
+
+    if (existingIndex !== -1) {
+      showNotification("Rate for this SKU already exists", "warning");
+      return;
+    }
+
+    const nextRates = [...watchDefaultSkuRates];
+    const nextEntry = {
+      sku: skuId,
+      rate: parsedRate,
+      notes:
+        editingDefaultSkuRateIndex !== null
+          ? nextRates[editingDefaultSkuRateIndex]?.notes || ""
+          : "",
+    };
+
+    if (editingDefaultSkuRateIndex !== null) {
+      nextRates[editingDefaultSkuRateIndex] = nextEntry;
+    } else {
+      nextRates.push(nextEntry);
+    }
+
+    const saved = await persistDefaultSkuRates(
+      nextRates,
+      editingDefaultSkuRateIndex !== null
+        ? "Default SKU rate updated successfully"
+        : "Default SKU rate added successfully"
+    );
+    if (!saved) {
+      return;
+    }
+
+    setSelectedDefaultSkuId("");
+    setDefaultSkuRateValue("");
+    setEditingDefaultSkuRateIndex(null);
+  };
+
+  const editDefaultSkuRate = (index) => {
+    const row = watchDefaultSkuRates[index];
+    if (!row) return;
+    setSelectedDefaultSkuId(normalizeEntityId(row.sku));
+    setDefaultSkuRateValue(String(row.rate ?? ""));
+    setEditingDefaultSkuRateIndex(index);
+  };
+
+  const removeDefaultSkuRate = (index) => {
+    const nextRates = watchDefaultSkuRates.filter((_, i) => i !== index);
+    setValue("defaultSkuRates", nextRates, {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+    if (editingDefaultSkuRateIndex === index) {
+      setSelectedDefaultSkuId("");
+      setDefaultSkuRateValue("");
+      setEditingDefaultSkuRateIndex(null);
+    }
+  };
+
+  const getLocalAgentRateHistory = useCallback(
+    (skuId = null) => {
+      const selectedSkuId = normalizeEntityId(skuId);
+      const agentRates = selectedAgent?.defaultSkuRates || [];
+
+      return agentRates.flatMap((entry) => {
+        const entrySku = entry?.skuId || entry?.sku || null;
+        const entrySkuId = normalizeEntityId(entrySku);
+
+        if (selectedSkuId && entrySkuId !== selectedSkuId) {
+          return [];
+        }
+
+        const historyEntries = Array.isArray(entry?.history) ? entry.history : [];
+
+        return historyEntries.map((historyEntry) => ({
+          ...historyEntry,
+          skuId: historyEntry?.skuId || entrySku,
+          rate:
+            historyEntry?.rate ??
+            historyEntry?.baseRate ??
+            historyEntry?.previousRate ??
+            historyEntry?.defaultRate,
+        }));
+      });
+    },
+    [selectedAgent]
+  );
+
+  const handleViewRateHistory = async (skuId = null, sku = null) => {
+    if (!selectedAgent?._id) {
+      showNotification("Please save the agent first to view rate history", "warning");
+      return;
+    }
+
+    setRateHistorySku(sku);
+    setLoadingRateHistory(true);
+    setRateHistoryDialogOpen(true);
+
+    try {
+      const history = await masterService.getAgentRateHistory(
+        selectedAgent._id,
+        skuId
+      );
+      setRateHistory(Array.isArray(history) ? history : []);
+    } catch (error) {
+      const fallbackHistory = getLocalAgentRateHistory(skuId);
+
+      if (fallbackHistory.length > 0) {
+        setRateHistory(fallbackHistory);
+        showNotification(
+          "Using rate history available in the loaded agent data",
+          "info"
+        );
+      } else {
+        showNotification("Failed to fetch rate history", "error");
+        setRateHistory([]);
+      }
+    } finally {
+      setLoadingRateHistory(false);
+    }
+  };
 
   const toggleManagedCustomer = (customerId) => {
     const current = watchManagedCustomers || [];
@@ -865,18 +1205,6 @@ const Agents = () => {
       ? current.filter((id) => id !== customerId)
       : [...current, customerId];
     setValue("customers", next, { shouldDirty: true, shouldValidate: true });
-  };
-
-  const toggleBlockedCustomer = (customerId) => {
-    const current = watchBlockedCustomers || [];
-    const exists = current.includes(customerId);
-    const next = exists
-      ? current.filter((id) => id !== customerId)
-      : [...current, customerId];
-    setValue("blockedSalesCustomers", next, {
-      shouldDirty: true,
-      shouldValidate: true,
-    });
   };
 
   const columns = [
@@ -888,11 +1216,6 @@ const Agents = () => {
       field: "targetSalesMeters",
       headerName: "Target (mtrs)",
       renderCell: (params) => formatNumber(params.value || 0),
-    },
-    {
-      field: "defaultRate",
-      headerName: "Default Rate",
-      renderCell: (params) => formatCurrency(params.value || 0),
     },
     {
       field: "active",
@@ -941,6 +1264,7 @@ const Agents = () => {
             <Tabs value={tabIndex} onChange={(e, value) => setTabIndex(value)}>
               <Tab label="Profile" />
               <Tab label="Defaults & Controls" />
+              <Tab label="Default Rates" />
               <Tab label="Customers" />
               <Tab label="Party Commission" />
               <Tab label="Payouts" />
@@ -1135,32 +1459,7 @@ const Agents = () => {
                   />
                 </Grid>
 
-                <Grid item xs={12} md={6}>
-                  <Controller
-                    name="defaultRate"
-                    control={control}
-                    render={({ field: { onChange, value, ...field } }) => (
-                      <NumericFormat
-                        {...field}
-                        value={value}
-                        onValueChange={(values) =>
-                          onChange(
-                            values.floatValue === undefined
-                              ? ""
-                              : values.floatValue
-                          )
-                        }
-                        customInput={TextField}
-                        fullWidth
-                        label="Default Rate (₹/meter)"
-                        thousandSeparator=","
-                        decimalScale={2}
-                        allowNegative={false}
-                        prefix="₹"
-                      />
-                    )}
-                  />
-                </Grid>
+                
 
                 <Grid item xs={12} md={6}>
                   <Controller
@@ -1206,20 +1505,6 @@ const Agents = () => {
 
                 <Grid item xs={12} md={6}>
                   <Controller
-                    name="blockedSalesCustomers"
-                    control={control}
-                    render={({ field }) =>
-                      renderCustomerSelect(
-                        field,
-                        "Block Sales for Selected Customers",
-                        !!errors.blockedSalesCustomers
-                      )
-                    }
-                  />
-                </Grid>
-
-                <Grid item xs={12} md={6}>
-                  <Controller
                     name="blockNewSalesForAllParties"
                     control={control}
                     render={({ field }) => (
@@ -1234,6 +1519,204 @@ const Agents = () => {
             </TabPanel>
 
             <TabPanel value={tabIndex} index={2}>
+              <Box>
+                <Paper sx={{ p: 2, mb: 3, bgcolor: "grey.50" }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Add New Rate
+                  </Typography>
+                  <Grid container spacing={2} alignItems="center">
+                    <Grid item xs={12} sm={6}>
+                      <Autocomplete
+                        value={
+                          skuLookup.get(normalizeEntityId(selectedDefaultSkuId)) ||
+                          null
+                        }
+                        onChange={(event, newValue) => {
+                          setSelectedDefaultSkuId(normalizeEntityId(newValue));
+                          setDefaultSkuRateValue("");
+                        }}
+                        options={availableDefaultSkus}
+                        getOptionLabel={(option) => option?.skuCode || ""}
+                        filterOptions={(options, { inputValue }) => {
+                          const search = inputValue.toLowerCase().trim();
+                          if (!search) return options;
+                          return options.filter((option) => {
+                            const product = option.productId;
+                            const searchableFields = [
+                              option.skuCode,
+                              option.skuAlias,
+                              String(option.widthInches),
+                              product?.productCode,
+                              product?.productAlias,
+                              product?.categoryId?.name,
+                              product?.gsmId?.name,
+                              product?.qualityId?.name,
+                            ];
+                            return searchableFields.some(
+                              (field) =>
+                                field && field.toLowerCase().includes(search)
+                            );
+                          });
+                        }}
+                        renderOption={(props, option) => (
+                          <li {...props} key={option._id}>
+                            {option.skuCode}
+                          </li>
+                        )}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Select Product"
+                            placeholder="Search by SKU, width, category..."
+                            size="small"
+                          />
+                        )}
+                        isOptionEqualToValue={(option, value) =>
+                          normalizeEntityId(option) === normalizeEntityId(value)
+                        }
+                        noOptionsText={
+                          watchDefaultSkuRates.length === skus.length
+                            ? "All SKUs have rates configured"
+                            : "No matching SKUs"
+                        }
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <TextField
+                        fullWidth
+                        size="small"
+                        label="Rate"
+                        type="number"
+                        value={defaultSkuRateValue}
+                        onChange={(e) => setDefaultSkuRateValue(e.target.value)}
+                        InputProps={{
+                          startAdornment: (
+                            <InputAdornment position="start">Rs.</InputAdornment>
+                          ),
+                        }}
+                        inputProps={{ min: 0, step: 0.01 }}
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={2}>
+                      <Button
+                        fullWidth
+                        variant="contained"
+                        startIcon={
+                          editingDefaultSkuRateIndex !== null ? (
+                            <EditIcon />
+                          ) : (
+                            <AddIcon />
+                          )
+                        }
+                        onClick={addOrUpdateDefaultSkuRate}
+                        disabled={!selectedDefaultSkuId || !defaultSkuRateValue}
+                      >
+                        {editingDefaultSkuRateIndex !== null ? "Update" : "Add"}
+                      </Button>
+                    </Grid>
+                  </Grid>
+                </Paper>
+
+                <Box
+                  sx={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    mb: 1,
+                  }}
+                >
+                  <Typography variant="subtitle2">Existing Rates</Typography>
+                  {selectedAgent?._id ? (
+                    <Tooltip title="View Full Rate History">
+                      <IconButton
+                        size="small"
+                        color="primary"
+                        onClick={() => handleViewRateHistory(null, null)}
+                      >
+                        <HistoryIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                </Box>
+
+                {watchDefaultSkuRates.length === 0 ? (
+                  <Typography
+                    color="text.secondary"
+                    sx={{ textAlign: "center", py: 4 }}
+                  >
+                    No default SKU rates configured for this agent.
+                  </Typography>
+                ) : (
+                  <TableContainer component={Paper} sx={{ maxHeight: 300 }}>
+                    <Table size="small" stickyHeader>
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>SKU Code</TableCell>
+                          <TableCell>Product</TableCell>
+                          <TableCell align="right">Rate (Rs.)</TableCell>
+                          <TableCell align="center">Actions</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {watchDefaultSkuRates.map((entry, index) => {
+                          const sku =
+                            skuLookup.get(normalizeEntityId(entry.sku)) ||
+                            (typeof entry.sku === "object" ? entry.sku : null);
+                          const product = sku?.productId;
+
+                          return (
+                            <TableRow
+                              key={`${normalizeEntityId(entry.sku)}-${index}`}
+                              hover
+                            >
+                              <TableCell>{sku?.skuCode || "-"}</TableCell>
+                              <TableCell>{product?.productCode || "-"}</TableCell>
+                              <TableCell align="right">
+                                {entry.rate?.toLocaleString("en-IN") || "-"}
+                              </TableCell>
+                              <TableCell align="center">
+                                {selectedAgent?._id ? (
+                                  <Tooltip title="View History">
+                                    <IconButton
+                                      size="small"
+                                      color="primary"
+                                      onClick={() =>
+                                        handleViewRateHistory(
+                                          normalizeEntityId(entry.sku),
+                                          sku
+                                        )
+                                      }
+                                    >
+                                      <HistoryIcon fontSize="small" />
+                                    </IconButton>
+                                  </Tooltip>
+                                ) : null}
+                                <IconButton
+                                  size="small"
+                                  color="primary"
+                                  onClick={() => editDefaultSkuRate(index)}
+                                >
+                                  <EditIcon fontSize="small" />
+                                </IconButton>
+                                <IconButton
+                                  size="small"
+                                  color="error"
+                                  onClick={() => removeDefaultSkuRate(index)}
+                                >
+                                  <DeleteIcon fontSize="small" />
+                                </IconButton>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                )}
+              </Box>
+            </TabPanel>
+
+            <TabPanel value={tabIndex} index={3}>
               <Typography variant="subtitle1" gutterBottom>
                 Managed Customers
               </Typography>
@@ -1250,7 +1733,6 @@ const Agents = () => {
                     {customers.map((customer) => {
                       const id = customer._id || customer.id;
                       const isManaged = (watchManagedCustomers || []).includes(id);
-                      const isBlocked = (watchBlockedCustomers || []).includes(id);
 
                       return (
                         <TableRow key={id}>
@@ -1259,19 +1741,8 @@ const Agents = () => {
                           <TableCell align="center">
                             <Switch
                               size="small"
-                              checked={isManaged && !isBlocked}
-                              onChange={(e) => {
-                                const nextOn = e.target.checked;
-                                // Turning off → block customer
-                                if (!nextOn) {
-                                  if (isManaged) toggleManagedCustomer(id);
-                                  if (!isBlocked) toggleBlockedCustomer(id);
-                                } else {
-                                  // Turning on → manage & unblock
-                                  if (!isManaged) toggleManagedCustomer(id);
-                                  if (isBlocked) toggleBlockedCustomer(id);
-                                }
-                              }}
+                              checked={isManaged}
+                              onChange={() => toggleManagedCustomer(id)}
                             />
                           </TableCell>
                         </TableRow>
@@ -1295,7 +1766,7 @@ const Agents = () => {
               )}
             </TabPanel>
 
-            <TabPanel value={tabIndex} index={3}>
+            <TabPanel value={tabIndex} index={4}>
               <Box
                 sx={{ display: "flex", justifyContent: "space-between", mb: 2 }}
               >
@@ -1383,13 +1854,26 @@ const Agents = () => {
                           )}
                         </TableCell>
                         <TableCell align="right">
-                          <IconButton
-                            color="error"
-                            size="small"
-                            onClick={() => handleRemoveCommission(commission)}
-                          >
-                            <DeleteIcon fontSize="small" />
-                          </IconButton>
+                            <Stack direction="row" spacing={1} justifyContent="flex-end">
+                            <Tooltip title="Edit Commission">
+                              <IconButton
+                                size="small"
+                                color="primary"
+                                onClick={() => handleEditCommission(commission)}
+                              >
+                                <EditIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Remove Commission">
+                              <IconButton
+                                color="error"
+                                size="small"
+                                onClick={() => handleRemoveCommission(commission)}
+                              >
+                                <DeleteIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          </Stack>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -1465,7 +1949,7 @@ const Agents = () => {
               )}
             </TabPanel>
 
-            <TabPanel value={tabIndex} index={4}>
+            <TabPanel value={tabIndex} index={5}>
               <Box
                 sx={{ display: "flex", justifyContent: "space-between", mb: 2 }}
               >
@@ -1569,7 +2053,7 @@ const Agents = () => {
               )}
             </TabPanel>
 
-            <TabPanel value={tabIndex} index={5}>
+            <TabPanel value={tabIndex} index={6}>
               <Box
                 sx={{ display: "flex", justifyContent: "space-between", mb: 2 }}
               >
@@ -1649,6 +2133,91 @@ const Agents = () => {
         </form>
       </Dialog>
 
+      <Dialog
+        open={rateHistoryDialogOpen}
+        onClose={() => setRateHistoryDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          Rate History - {selectedAgent?.name || "Agent"}
+          {rateHistorySku
+            ? ` / ${rateHistorySku.skuCode || rateHistorySku.skuAlias || "SKU"}`
+            : " (All SKUs)"}
+        </DialogTitle>
+        <DialogContent>
+          {loadingRateHistory ? (
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 2 }}>
+              <CircularProgress size={18} />
+              <Typography variant="body2" color="text.secondary">
+                Loading rate history...
+              </Typography>
+            </Box>
+          ) : rateHistory.length === 0 ? (
+            <Typography color="text.secondary" sx={{ mt: 2 }}>
+              No rate history found.
+            </Typography>
+          ) : (
+            <TableContainer component={Paper} sx={{ mt: 2, maxHeight: 400 }}>
+              <Table size="small" stickyHeader>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Date</TableCell>
+                    <TableCell>SKU Code</TableCell>
+                    <TableCell>Product</TableCell>
+                    <TableCell align="right">Rate (Rs.)</TableCell>
+                    <TableCell>Notes</TableCell>
+                    <TableCell>Valid From</TableCell>
+                    <TableCell>Valid To</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {rateHistory.map((entry, index) => {
+                    const sku = entry.skuId || entry.sku || null;
+                    const product = sku?.productId || null;
+                    const historyRate =
+                      entry.rate ??
+                      entry.baseRate ??
+                      entry.previousRate ??
+                      entry.defaultRate ??
+                      0;
+
+                    return (
+                      <TableRow key={entry._id || entry.id || index}>
+                        <TableCell>
+                          {formatDate(
+                            entry.createdAt || entry.updatedAt || entry.validFrom
+                          )}
+                        </TableCell>
+                        <TableCell>{sku?.skuCode || sku?.skuAlias || "-"}</TableCell>
+                        <TableCell>{product?.productCode || product?.name || "-"}</TableCell>
+                        <TableCell align="right">
+                          {historyRate?.toLocaleString("en-IN") || "-"}
+                        </TableCell>
+                        <TableCell>{entry.notes || "-"}</TableCell>
+                        <TableCell>
+                          {entry.validFrom ? formatDate(entry.validFrom) : "-"}
+                        </TableCell>
+                        <TableCell>
+                          {entry.validTo ? (
+                            formatDate(entry.validTo)
+                          ) : (
+                            <Chip label="Current" color="success" size="small" />
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setRateHistoryDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
       {/* Commission Dialog */}
       <Dialog
         open={commissionDialogOpen}
@@ -1656,55 +2225,51 @@ const Agents = () => {
         maxWidth="sm"
         fullWidth
       >
-        <DialogTitle>Add / Update Party Commission</DialogTitle>
+        <DialogTitle>
+          {commissionForm.isEditing
+            ? "Edit Party Commission"
+            : "Add / Update Party Commission"}
+        </DialogTitle>
         <DialogContent sx={{ pt: 1 }}>
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
             <Grid item xs={12}>
               <FormControl fullWidth>
-                <InputLabel>Customer</InputLabel>
-                <Select
-                  value={commissionForm.customerId}
-                  label="Customer"
-                  onChange={(event) =>
-                    setCommissionForm((prev) => ({
-                      ...prev,
-                      customerId: event.target.value,
-                    }))
-                  }
-                >
-                  <MenuItem value="">
-                    <em>Select customer</em>
-                  </MenuItem>
-                  {customerMenuItems.map((item) => (
-                    <MenuItem key={item.id} value={item.id}>
-                      {item.label}
-                    </MenuItem>
-                  ))}
-                </Select>
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    customerSelectOptions,
+                    commissionForm.customerId,
+                    (value) =>
+                      setCommissionForm((prev) => ({
+                        ...prev,
+                        customerId: value,
+                      }))
+                  )}
+                  disabled={commissionForm.isEditing}
+                  renderInput={(params) => (
+                    <TextField {...params} label="Customer" />
+                  )}
+                />
               </FormControl>
             </Grid>
 
             <Grid item xs={12} md={6}>
               <FormControl fullWidth>
-                <InputLabel>Commission Method</InputLabel>
-                <Select
-                  value={commissionForm.commissionType}
-                  label="Commission Method"
-                  onChange={(event) =>
-                    setCommissionForm((prev) => ({
-                      ...prev,
-                      commissionType: event.target.value,
-                      amountPerMeter: "",
-                      percentage: "",
-                    }))
-                  }
-                >
-                  {COMMISSION_METHOD_OPTIONS.map((option) => (
-                    <MenuItem key={option.value} value={option.value}>
-                      {option.label}
-                    </MenuItem>
-                  ))}
-                </Select>
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    COMMISSION_METHOD_OPTIONS,
+                    commissionForm.commissionType,
+                    (value) =>
+                      setCommissionForm((prev) => ({
+                        ...prev,
+                        commissionType: value,
+                        amountPerMeter: "",
+                        percentage: "",
+                      }))
+                  )}
+                  renderInput={(params) => (
+                    <TextField {...params} label="Commission Method" />
+                  )}
+                />
               </FormControl>
             </Grid>
 
@@ -1813,26 +2378,20 @@ const Agents = () => {
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
             <Grid item xs={12}>
               <FormControl fullWidth>
-                <InputLabel>Customer (optional)</InputLabel>
-                <Select
-                  value={payoutForm.customerId}
-                  label="Customer (optional)"
-                  onChange={(event) =>
-                    setPayoutForm((prev) => ({
-                      ...prev,
-                      customerId: event.target.value,
-                    }))
-                  }
-                >
-                  <MenuItem value="">
-                    <em>All customers</em>
-                  </MenuItem>
-                  {customerMenuItems.map((item) => (
-                    <MenuItem key={item.id} value={item.id}>
-                      {item.label}
-                    </MenuItem>
-                  ))}
-                </Select>
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    payoutCustomerOptions,
+                    payoutForm.customerId,
+                    (value) =>
+                      setPayoutForm((prev) => ({
+                        ...prev,
+                        customerId: value,
+                      }))
+                  )}
+                  renderInput={(params) => (
+                    <TextField {...params} label="Customer (optional)" />
+                  )}
+                />
               </FormControl>
             </Grid>
 
@@ -1899,23 +2458,20 @@ const Agents = () => {
 
             <Grid item xs={12} md={6}>
               <FormControl fullWidth>
-                <InputLabel>Payout Status</InputLabel>
-                <Select
-                  value={payoutForm.payoutStatus}
-                  label="Payout Status"
-                  onChange={(event) =>
-                    setPayoutForm((prev) => ({
-                      ...prev,
-                      payoutStatus: event.target.value,
-                    }))
-                  }
-                >
-                  {PAYOUT_STATUS_OPTIONS.map((option) => (
-                    <MenuItem key={option.value} value={option.value}>
-                      {option.label}
-                    </MenuItem>
-                  ))}
-                </Select>
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    PAYOUT_STATUS_OPTIONS,
+                    payoutForm.payoutStatus,
+                    (value) =>
+                      setPayoutForm((prev) => ({
+                        ...prev,
+                        payoutStatus: value,
+                      }))
+                  )}
+                  renderInput={(params) => (
+                    <TextField {...params} label="Payout Status" />
+                  )}
+                />
               </FormControl>
             </Grid>
 
@@ -1986,23 +2542,20 @@ const Agents = () => {
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
             <Grid item xs={12}>
               <FormControl fullWidth>
-                <InputLabel>Document Type</InputLabel>
-                <Select
-                  value={kycForm.documentType}
-                  label="Document Type"
-                  onChange={(event) =>
-                    setKycForm((prev) => ({
-                      ...prev,
-                      documentType: event.target.value,
-                    }))
-                  }
-                >
-                  {DOCUMENT_TYPE_OPTIONS.map((option) => (
-                    <MenuItem key={option.value} value={option.value}>
-                      {option.label}
-                    </MenuItem>
-                  ))}
-                </Select>
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    DOCUMENT_TYPE_OPTIONS,
+                    kycForm.documentType,
+                    (value) =>
+                      setKycForm((prev) => ({
+                        ...prev,
+                        documentType: value,
+                      }))
+                  )}
+                  renderInput={(params) => (
+                    <TextField {...params} label="Document Type" />
+                  )}
+                />
               </FormControl>
             </Grid>
             <Grid item xs={12}>
@@ -2068,3 +2621,7 @@ const Agents = () => {
 };
 
 export default Agents;
+
+
+
+

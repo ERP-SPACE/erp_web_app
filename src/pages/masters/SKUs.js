@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -7,7 +8,6 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  MenuItem,
   FormControlLabel,
   Switch,
   Typography,
@@ -15,8 +15,10 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import masterService from "../../services/masterService";
+import { formatInches } from "../../utils/formatters";
 
 const SKUs = () => {
   const { showNotification, setLoading } = useApp();
@@ -26,6 +28,14 @@ const SKUs = () => {
   const [openConfirm, setOpenConfirm] = useState(false);
   const [selectedSKU, setSelectedSKU] = useState(null);
   const [deleteId, setDeleteId] = useState(null);
+  const productOptions = products.map((product) => ({
+    value: product._id,
+    label: product.productCode,
+  }));
+  const widthOptions = [24, 36, 44, 63].map((width) => ({
+    value: width,
+    label: `${width}"`,
+  }));
 
   const {
     control,
@@ -242,7 +252,11 @@ const SKUs = () => {
         return product.productCode || "";
       },
     },
-    { field: "widthInches", headerName: "Width (inches)" },
+    {
+      field: "widthInches",
+      headerName: "Width (inches)",
+      renderCell: (params) => formatInches(params.value),
+    },
     { field: "taxRate", headerName: "Tax %" },
     {
       field: "active",
@@ -280,22 +294,24 @@ const SKUs = () => {
               control={control}
               rules={{ required: "Product is required" }}
               render={({ field }) => (
-                <TextField
-                  {...field}
-                  select
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    productOptions,
+                    field.value,
+                    field.onChange
+                  )}
                   fullWidth
-                  label="Product"
-                  margin="normal"
-                  error={!!errors.productId}
-                  helperText={errors.productId?.message}
                   disabled={!!selectedSKU}
-                >
-                  {products.map((product) => (
-                    <MenuItem key={product._id} value={product._id}>
-                      {product.productCode}
-                    </MenuItem>
-                  ))}
-                </TextField>
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Product"
+                      margin="normal"
+                      error={!!errors.productId}
+                      helperText={errors.productId?.message}
+                    />
+                  )}
+                />
               )}
             />
 
@@ -316,22 +332,24 @@ const SKUs = () => {
               control={control}
               rules={{ required: "Width is required" }}
               render={({ field }) => (
-                <TextField
-                  {...field}
-                  select
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    widthOptions,
+                    field.value,
+                    field.onChange
+                  )}
                   fullWidth
-                  label="Width (inches)"
-                  margin="normal"
-                  error={!!errors.widthInches}
-                  helperText={errors.widthInches?.message}
                   disabled={!!selectedSKU}
-                >
-                  {[24, 36, 44, 63].map((width) => (
-                    <MenuItem key={width} value={width}>
-                      {width}"
-                    </MenuItem>
-                  ))}
-                </TextField>
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Width (inches)"
+                      margin="normal"
+                      error={!!errors.widthInches}
+                      helperText={errors.widthInches?.message}
+                    />
+                  )}
+                />
               )}
             />
 
@@ -372,8 +390,7 @@ const SKUs = () => {
                   fullWidth
                   label="SKU Alias"
                   margin="normal"
-                  helperText="Auto-generated from width + product alias"
-                  disabled
+                  helperText="Auto-generated from width + product alias"                  
                 />
               )}
             />

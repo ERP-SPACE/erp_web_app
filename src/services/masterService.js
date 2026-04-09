@@ -476,6 +476,15 @@ const masterService = {
     return res.data || res;
   },
 
+  getAgentRateHistory: async (agentId, skuId = null, limit = 50) => {
+    const params = { limit };
+    if (skuId) params.skuId = skuId;
+    const res = await api.get(`/agents/${agentId}/rate-history`, {
+      params,
+    });
+    return res.data?.data || res.data || [];
+  },
+
   toggleAgentStatus: async (id) => {
     const res = await api.patch(`/agents/${id}/status`);
     return res.data || res;

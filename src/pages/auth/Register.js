@@ -7,22 +7,11 @@ import {
   Button,
   Stack,
   Link as MuiLink,
-  MenuItem,
 } from "@mui/material";
 import { useForm, Controller } from "react-hook-form";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
 import { useApp } from "../../contexts/AppContext";
-
-const roleOptions = [
-  "Admin",
-  "SuperAdmin",
-  "PurchaseManager",
-  "SalesManager",
-  "SalesExec",
-  "WarehouseStaff",
-  "Accountant",
-];
 
 const Register = () => {
   const { register: registerUser } = useAuth();
@@ -37,7 +26,6 @@ const Register = () => {
       username: "",
       email: "",
       password: "",
-      role: "Admin",
       addressLine1: "",
       addressLine2: "",
       city: "",
@@ -54,7 +42,6 @@ const Register = () => {
         username: data.username,
         email: data.email,
         password: data.password,
-        role: data.role,
         address: {
           line1: data.addressLine1,
           line2: data.addressLine2,
@@ -100,7 +87,7 @@ const Register = () => {
           Create your account
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          Register an admin user to access the dashboard.
+          Register your account to access the dashboard.
         </Typography>
 
         <Stack spacing={2.5} component="form" onSubmit={handleSubmit(onSubmit)}>
@@ -157,20 +144,6 @@ const Register = () => {
                     "Minimum 8 characters")
                 }
               />
-            )}
-          />
-
-          <Controller
-            name="role"
-            control={control}
-            render={({ field }) => (
-              <TextField {...field} select fullWidth label="Role (optional)">
-                {roleOptions.map((r) => (
-                  <MenuItem key={r} value={r}>
-                    {r}
-                  </MenuItem>
-                ))}
-              </TextField>
             )}
           />
 

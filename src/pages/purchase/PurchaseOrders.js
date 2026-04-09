@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -39,6 +40,7 @@ import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import purchaseService from "../../services/purchaseService";
 import masterService from "../../services/masterService";
@@ -71,6 +73,14 @@ const PurchaseOrders = () => {
   const [supplierBaseRates, setSupplierBaseRates] = useState([]);
   const [addingRateForLine, setAddingRateForLine] = useState(null);
   const [newRateValue, setNewRateValue] = useState("");
+  const supplierOptions = (suppliers || []).map((supplier) => ({
+    value: supplier._id,
+    label: supplier.name,
+  }));
+  const skuOptions = [
+    { value: "", label: "Select SKU" },
+    ...(skus || []).map((sku) => ({ value: sku._id, label: sku.skuCode })),
+  ];
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
@@ -609,20 +619,22 @@ const PurchaseOrders = () => {
                       control={control}
                       rules={{ required: "Supplier is required" }}
                       render={({ field }) => (
-                        <TextField
-                          {...field}
-                          select
+                        <Autocomplete
+                          {...buildSingleSelectAutocompleteProps(
+                            supplierOptions,
+                            field.value,
+                            field.onChange
+                          )}
                           fullWidth
-                          label="Supplier"
-                          error={!!errors.supplierId}
-                          helperText={errors.supplierId?.message}
-                        >
-                          {(suppliers || []).map((supplier) => (
-                            <MenuItem key={supplier._id} value={supplier._id}>
-                              {supplier.name}
-                            </MenuItem>
-                          ))}
-                        </TextField>
+                          renderInput={(params) => (
+                            <TextField
+                              {...params}
+                              label="Supplier"
+                              error={!!errors.supplierId}
+                              helperText={errors.supplierId?.message}
+                            />
+                          )}
+                        />
                       )}
                     />
                     <Controller
@@ -710,7 +722,7 @@ const PurchaseOrders = () => {
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell>SKU</TableCell>
+                    <TableCell sx={{ minWidth: 140 }}>SKU</TableCell>
                     <TableCell>Category</TableCell>
                     <TableCell>GSM</TableCell>
                     <TableCell>Quality</TableCell>
@@ -742,29 +754,25 @@ const PurchaseOrders = () => {
 
                     return (
                     <TableRow key={field.id}>
-                      <TableCell>
+                      <TableCell sx={{ minWidth: 300 }}>
                         <Controller
                           name={`lines.${index}.skuId`}
                           control={control}
                           render={({ field }) => (
-                            <TextField
-                              {...field}
-                              select
+                            <Autocomplete
+                              {...buildSingleSelectAutocompleteProps(
+                                skuOptions,
+                                field.value,
+                                (value) => {
+                                  setAddingRateForLine(null);
+                                  setNewRateValue("");
+                                  handleSKUChange(index, value);
+                                }
+                              )}
                               size="small"
                               fullWidth
-                              onChange={(e) => {
-                                setAddingRateForLine(null);
-                                setNewRateValue("");
-                                handleSKUChange(index, e.target.value);
-                              }}
-                            >
-                              <MenuItem value="">Select SKU</MenuItem>
-                              {(skus || []).map((sku) => (
-                                <MenuItem key={sku._id} value={sku._id}>
-                                  {sku.skuCode}
-                                </MenuItem>
-                              ))}
-                            </TextField>
+                              renderInput={(params) => <TextField {...params} />}
+                            />
                           )}
                         />
                       </TableCell>

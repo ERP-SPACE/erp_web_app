@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -43,12 +44,14 @@ import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import salesService from "../../services/salesService";
 import masterService from "../../services/masterService";
 import {
   formatCurrency,
   formatDate,
+  formatInches,
   getStatusColor,
 } from "../../utils/formatters";
 
@@ -67,6 +70,14 @@ const SalesOrders = () => {
   const [customerRates, setCustomerRates] = useState([]);
   const [addingRateForLine, setAddingRateForLine] = useState(null);
   const [newRateValue, setNewRateValue] = useState("");
+  const customerOptions = customers.map((customer) => ({
+    value: customer._id,
+    label: `${customer.companyName || customer.customerCode || "Customer"} (${customer.customerCode || "N/A"})`,
+  }));
+  const skuOptions = [
+    { value: "", label: "Select" },
+    ...skus.map((sku) => ({ value: sku._id, label: sku.skuCode })),
+  ];
   const [bifurcationDialog, setBifurcationDialog] = useState({
     open: false,
     lineIndex: null,
@@ -839,24 +850,24 @@ const SalesOrders = () => {
                     control={control}
                     rules={{ required: "Customer is required" }}
                     render={({ field }) => (
-                      <TextField
-                        {...field}
-                        select
+                      <Autocomplete
+                        {...buildSingleSelectAutocompleteProps(
+                          customerOptions,
+                          field.value,
+                          field.onChange
+                        )}
                         fullWidth
                         size="small"
-                        label="Customer"
-                        error={!!errors.customerId}
-                        helperText={errors.customerId?.message}
-                        inputProps={{ readOnly: viewMode }}
                         disabled={viewMode}
-                      >
-                        {customers.map((customer) => (
-                          <MenuItem key={customer._id} value={customer._id}>
-                            {customer.companyName || customer.customerCode || "Customer"}{" "}
-                            ({customer.customerCode || "N/A"})
-                          </MenuItem>
-                        ))}
-                      </TextField>
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Customer"
+                            error={!!errors.customerId}
+                            helperText={errors.customerId?.message}
+                          />
+                        )}
+                      />
                     )}
                   />
 
@@ -1090,30 +1101,26 @@ const SalesOrders = () => {
                             name={`lines.${index}.skuId`}
                             control={control}
                             render={({ field }) => (
-                              <TextField
-                                {...field}
-                                select
+                              <Autocomplete
+                                {...buildSingleSelectAutocompleteProps(
+                                  skuOptions,
+                                  field.value,
+                                  (value) => handleSKUChange(index, value)
+                                )}
                                 size="small"
                                 fullWidth
                                 disabled={viewMode}
-                                onChange={(e) =>
-                                  handleSKUChange(index, e.target.value)
-                                }
-                              >
-                                <MenuItem value="">Select</MenuItem>
-                                {skus.map((sku) => (
-                                  <MenuItem key={sku._id} value={sku._id}>
-                                    {sku.skuCode}
-                                  </MenuItem>
-                                ))}
-                              </TextField>
+                                renderInput={(params) => (
+                                  <TextField {...params} />
+                                )}
+                              />
                             )}
                           />
                         </TableCell>
                         <TableCell>{formatDisplayValue(line?.categoryName)}</TableCell>
                         <TableCell>{formatDisplayValue(line?.gsm)}</TableCell>
                         <TableCell>{formatDisplayValue(line?.qualityName)}</TableCell>
-                        <TableCell>{formatDisplayValue(line?.widthInches)}</TableCell>
+                        <TableCell>{formatInches(line?.widthInches)}</TableCell>
                         <TableCell>
                           <Controller
                             name={`lines.${index}.lengthMetersPerRoll`}

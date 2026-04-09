@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Paper,
   Grid,
@@ -7,7 +8,6 @@ import {
   Card,
   CardContent,
   TextField,
-  MenuItem,
   Chip,
 } from "@mui/material";
 import {
@@ -17,9 +17,10 @@ import {
   StraightenOutlined as MetersIcon,
 } from "@mui/icons-material";
 import DataTable from "../../components/common/DataTable";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import inventoryService from "../../services/inventoryService";
-import { formatCurrency, formatNumber } from "../../utils/formatters";
+import { formatCurrency, formatInches, formatNumber } from "../../utils/formatters";
 
 const StockSummary = () => {
   const { showNotification, setLoading } = useApp();
@@ -34,6 +35,12 @@ const StockSummary = () => {
     categoryId: "",
     status: "Mapped",
   });
+  const statusOptions = [
+    { value: "", label: "All" },
+    { value: "Mapped", label: "Mapped (Available)" },
+    { value: "Allocated", label: "Allocated" },
+    { value: "Dispatched", label: "Dispatched" },
+  ];
 
   useEffect(() => {
     fetchStockSummary();
@@ -110,7 +117,11 @@ const StockSummary = () => {
     { field: "categoryName", headerName: "Category" },
     { field: "gsm", headerName: "GSM" },
     { field: "qualityName", headerName: "Quality" },
-    { field: "widthInches", headerName: 'Width"' },
+    {
+      field: "widthInches",
+      headerName: 'Width"',
+      renderCell: (params) => formatInches(params.value),
+    },
     {
       field: "totalRolls",
       headerName: "Total Rolls",
@@ -198,21 +209,18 @@ const StockSummary = () => {
       <Paper sx={{ p: 2, mb: 2 }}>
         <Grid container spacing={2}>
           <Grid item xs={12} md={3}>
-            <TextField
-              select
-              fullWidth
-              label="Status Filter"
-              value={filters.status}
-              onChange={(e) =>
-                setFilters({ ...filters, status: e.target.value })
-              }
+            <Autocomplete
+              {...buildSingleSelectAutocompleteProps(
+                statusOptions,
+                filters.status,
+                (value) => setFilters({ ...filters, status: value })
+              )}
               size="small"
-            >
-              <MenuItem value="">All</MenuItem>
-              <MenuItem value="Mapped">Mapped (Available)</MenuItem>
-              <MenuItem value="Allocated">Allocated</MenuItem>
-              <MenuItem value="Dispatched">Dispatched</MenuItem>
-            </TextField>
+              fullWidth
+              renderInput={(params) => (
+                <TextField {...params} label="Status Filter" />
+              )}
+            />
           </Grid>
         </Grid>
       </Paper>

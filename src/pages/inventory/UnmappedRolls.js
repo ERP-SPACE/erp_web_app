@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -7,7 +8,6 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  MenuItem,
   Grid,
   Table,
   TableBody,
@@ -23,10 +23,11 @@ import {
 import { Map as MapIcon, CheckCircle as SaveIcon } from "@mui/icons-material";
 import { useForm, Controller } from "react-hook-form";
 import DataTable from "../../components/common/DataTable";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import inventoryService from "../../services/inventoryService";
 import masterService from "../../services/masterService";
-import { formatDate } from "../../utils/formatters";
+import { formatDate, formatInches } from "../../utils/formatters";
 
 const UnmappedRolls = () => {
   const { showNotification, setLoading } = useApp();
@@ -35,6 +36,10 @@ const UnmappedRolls = () => {
   const [skus, setSKUs] = useState([]);
   const [openMappingDialog, setOpenMappingDialog] = useState(false);
   const [mappingData, setMappingData] = useState({});
+  const skuOptions = [
+    { value: "", label: "Select SKU" },
+    ...skus.map((sku) => ({ value: sku._id, label: sku.skuCode })),
+  ];
 
   const { control, handleSubmit, reset, setValue } = useForm();
 
@@ -196,7 +201,11 @@ const UnmappedRolls = () => {
     { field: "rollNumber", headerName: "Roll Number" },
     { field: "gsm", headerName: "GSM" },
     { field: "qualityName", headerName: "Quality" },
-    { field: "widthInches", headerName: 'Width"' },
+    {
+      field: "widthInches",
+      headerName: 'Width"',
+      renderCell: (params) => formatInches(params.value),
+    },
     {
       field: "currentLengthMeters",
       headerName: "Length (m)",
@@ -271,27 +280,21 @@ const UnmappedRolls = () => {
                   <TableRow key={rollId}>
                     <TableCell>{data.rollNumber}</TableCell>
                     <TableCell>
-                      <TextField
-                        select
+                      <Autocomplete
+                        {...buildSingleSelectAutocompleteProps(
+                          skuOptions,
+                          data.skuId,
+                          (value) => handleSKUChange(rollId, value)
+                        )}
                         size="small"
                         fullWidth
-                        value={data.skuId}
-                        onChange={(e) =>
-                          handleSKUChange(rollId, e.target.value)
-                        }
-                      >
-                        <MenuItem value="">Select SKU</MenuItem>
-                        {skus.map((sku) => (
-                          <MenuItem key={sku._id} value={sku._id}>
-                            {sku.skuCode}
-                          </MenuItem>
-                        ))}
-                      </TextField>
+                        renderInput={(params) => <TextField {...params} />}
+                      />
                     </TableCell>
                     <TableCell>{data.categoryName || "-"}</TableCell>
                     <TableCell>{data.gsm || "-"}</TableCell>
                     <TableCell>{data.qualityName || "-"}</TableCell>
-                    <TableCell>{data.widthInches || "-"}</TableCell>
+                    <TableCell>{formatInches(data.widthInches)}</TableCell>
                     <TableCell>
                       <TextField
                         type="number"

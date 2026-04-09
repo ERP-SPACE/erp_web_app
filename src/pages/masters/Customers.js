@@ -48,6 +48,7 @@ import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import masterService from "../../services/masterService";
 import { formatCurrency, formatDate } from "../../utils/formatters";
@@ -95,6 +96,18 @@ const Customers = () => {
   const [editingRate, setEditingRate] = useState(null);
   const [editRateValue, setEditRateValue] = useState("");
   const [rateHistorySku, setRateHistorySku] = useState(null);
+  const agentOptions = [
+    { value: "", label: "Unassigned" },
+    ...agents.map((agent) => ({
+      value: agent._id,
+      label: `${agent.name}${agent.agentCode ? ` (${agent.agentCode})` : ""}`,
+    })),
+  ];
+  const blockRuleOptions = [
+    { value: "OVER_LIMIT", label: "Credit Over Limit" },
+    { value: "OVER_DUE", label: "Days Over Due" },
+    { value: "BOTH", label: "Any Breach (Limit or Days)" },
+  ];
 
   const {
     control,
@@ -351,6 +364,29 @@ const Customers = () => {
     }
   };
 
+  const handleAgentChange = async (agentId) => {
+    if (!agentId || !selectedCustomer) return;
+
+    try {
+      const commissionPayload = {
+        customer: selectedCustomer._id,
+        commissionType: "percentage",
+        percentage: 5,
+        applyByDefault: true,
+        effectiveFrom: new Date().toISOString().split('T')[0],
+        notes: "Auto-created default commission when agent was assigned to customer",
+      };
+
+      await masterService.upsertAgentPartyCommission(agentId, commissionPayload);
+      showNotification("Default commission created for the selected agent", "success");
+    } catch (error) {
+      showNotification(
+        error.message || "Failed to create default commission",
+        "error"
+      );
+    }
+  };
+
   const handleAdd = () => {
     setSelectedCustomer(null);
     reset({
@@ -522,6 +558,35 @@ const Customers = () => {
       // Sanitize numeric fields - convert formatted strings to numbers
       const sanitizedData = { ...data };
 
+      const normalizedContactPersons = Array.isArray(sanitizedData.contactPersons)
+        ? sanitizedData.contactPersons
+            .map((person = {}) => ({
+              ...person,
+              name: (person.name || "").trim(),
+              phone: (person.phone || "").trim(),
+              email: (person.email || "").trim(),
+              designation: (person.designation || "").trim(),
+              whatsapp: (person.whatsapp || "").trim(),
+            }))
+            .filter(
+              (person) =>
+                person.name ||
+                person.phone ||
+                person.email ||
+                person.designation ||
+                person.whatsapp
+            )
+        : [];
+
+      if (
+        normalizedContactPersons.length > 0 &&
+        !normalizedContactPersons.some((person) => person.isPrimary)
+      ) {
+        normalizedContactPersons[0].isPrimary = true;
+      }
+
+      sanitizedData.contactPersons = normalizedContactPersons;
+
       // Convert creditPolicy numeric fields
       if (sanitizedData.creditPolicy) {
         if (typeof sanitizedData.creditPolicy.creditLimit === "string") {
@@ -658,11 +723,6 @@ const Customers = () => {
         const code = agent.agentCode ? ` (${agent.agentCode})` : "";
         return `${name}${code}`;
       },
-    },
-    {
-      field: "baseRate44",
-      headerName: '44" Rate',
-      renderCell: (params) => formatCurrency(params.value),
     },
     {
       field: "creditPolicy",
@@ -854,23 +914,25 @@ const Customers = () => {
                     name="agentId"
                     control={control}
                     render={({ field }) => (
-                      <TextField
-                        {...field}
-                        select
+                      <Autocomplete
+                        {...buildSingleSelectAutocompleteProps(
+                          agentOptions,
+                          field.value || "",
+                          (value) => {
+                            field.onChange(value);
+                            handleAgentChange(value);
+                          }
+                        )}
                         fullWidth
-                        label="Agent"
-                        value={field.value || ""}
-                        error={!!errors.agentId}
-                        helperText={errors.agentId?.message}
-                      >
-                        <MenuItem value="">Unassigned</MenuItem>
-                        {agents.map((agent) => (
-                          <MenuItem key={agent._id} value={agent._id}>
-                            {agent.name}
-                            {agent.agentCode ? ` (${agent.agentCode})` : ""}
-                          </MenuItem>
-                        ))}
-                      </TextField>
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Agent"
+                            error={!!errors.agentId}
+                            helperText={errors.agentId?.message}
+                          />
+                        )}
+                      />
                     )}
                   />
                 </Grid>
@@ -999,7 +1061,6 @@ const Customers = () => {
                       <Controller
                         name={`contactPersons.${index}.name`}
                         control={control}
-                        rules={{ required: "Name is required" }}
                         render={({ field }) => (
                           <TextField
                             {...field}
@@ -1018,7 +1079,6 @@ const Customers = () => {
                       <Controller
                         name={`contactPersons.${index}.phone`}
                         control={control}
-                        rules={{ required: "Phone is required" }}
                         render={({ field }) => (
                           <TextField
                             {...field}
@@ -1217,11 +1277,17 @@ const Customers = () => {
                     name="creditPolicy.blockRule"
                     control={control}
                     render={({ field }) => (
-                      <TextField {...field} select fullWidth label="Block Rule">
-                        <MenuItem value="OVER_LIMIT">Credit Over Limit</MenuItem>
-                        <MenuItem value="OVER_DUE">Days Over Due</MenuItem>
-                        <MenuItem value="BOTH">Any Breach (Limit or Days)</MenuItem>
-                      </TextField>
+                      <Autocomplete
+                        {...buildSingleSelectAutocompleteProps(
+                          blockRuleOptions,
+                          field.value,
+                          field.onChange
+                        )}
+                        fullWidth
+                        renderInput={(params) => (
+                          <TextField {...params} label="Block Rule" />
+                        )}
+                      />
                     )}
                   />
                 </Grid>
@@ -1295,7 +1361,7 @@ const Customers = () => {
                           renderInput={(params) => (
                             <TextField
                               {...params}
-                              label="Select SKU"
+                              label="Select Product"
                               placeholder="Search by SKU, width, category..."
                               size="small"
                             />

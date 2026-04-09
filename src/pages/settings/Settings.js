@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import {
+  Autocomplete,
   Box,
   Card,
   CardContent,
@@ -10,15 +11,13 @@ import {
   ListItemText,
   Divider,
   Switch,
-  Select,
-  MenuItem,
   FormControl,
-  InputLabel,
   Grid,
   Chip,
   Button,
   Tooltip,
   Alert,
+  TextField,
 } from "@mui/material";
 import {
   Palette as PaletteIcon,
@@ -35,7 +34,7 @@ import {
   Receipt as ReceiptIcon,
   Download as DownloadIcon,
 } from "@mui/icons-material";
-
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 // ─── Settings storage helper ───────────────────────────────────────────────────
 const STORAGE_KEY = "erp_settings";
 
@@ -255,16 +254,21 @@ const Settings = () => {
             Layout
           </Typography>
           <FormControl size="small" sx={{ minWidth: 220 }}>
-            <InputLabel>Sidebar Width</InputLabel>
-            <Select
-              label="Sidebar Width"
-              value={settings.sidebarWidth}
-              onChange={(e) => updateSetting("sidebarWidth", e.target.value)}
-            >
-              <MenuItem value="220">220px — Compact</MenuItem>
-              <MenuItem value="260">260px — Default</MenuItem>
-              <MenuItem value="280">280px — Wide</MenuItem>
-            </Select>
+            <Autocomplete
+              {...buildSingleSelectAutocompleteProps(
+                [
+                  { value: "220", label: "220px — Compact" },
+                  { value: "260", label: "260px — Default" },
+                  { value: "280", label: "280px — Wide" },
+                ],
+                settings.sidebarWidth,
+                (value) => updateSetting("sidebarWidth", value)
+              )}
+              size="small"
+              renderInput={(params) => (
+                <TextField {...params} label="Sidebar Width" />
+              )}
+            />
           </FormControl>
         </CardContent>
       </Card>
@@ -278,18 +282,23 @@ const Settings = () => {
       <Card>
         <CardContent sx={{ p: 3 }}>
           <FormControl size="small" fullWidth sx={{ maxWidth: 320 }}>
-            <InputLabel>Display Language</InputLabel>
-            <Select
-              label="Display Language"
-              value={settings.language}
-              onChange={(e) => updateSetting("language", e.target.value)}
-            >
-              <MenuItem value="en-IN">English (India)</MenuItem>
-              <MenuItem value="en-US">English (US)</MenuItem>
-              <MenuItem value="hi">Hindi</MenuItem>
-              <MenuItem value="gu">Gujarati</MenuItem>
-              <MenuItem value="mr">Marathi</MenuItem>
-            </Select>
+            <Autocomplete
+              {...buildSingleSelectAutocompleteProps(
+                [
+                  { value: "en-IN", label: "English (India)" },
+                  { value: "en-US", label: "English (US)" },
+                  { value: "hi", label: "Hindi" },
+                  { value: "gu", label: "Gujarati" },
+                  { value: "mr", label: "Marathi" },
+                ],
+                settings.language,
+                (value) => updateSetting("language", value)
+              )}
+              size="small"
+              renderInput={(params) => (
+                <TextField {...params} label="Display Language" />
+              )}
+            />
           </FormControl>
           <Typography variant="caption" sx={{ color: "grey.400", mt: 2, display: "block" }}>
             More language options coming soon.
@@ -311,17 +320,22 @@ const Settings = () => {
                 Date Format
               </Typography>
               <FormControl size="small" fullWidth>
-                <InputLabel>Date Format</InputLabel>
-                <Select
-                  label="Date Format"
-                  value={settings.dateFormat}
-                  onChange={(e) => updateSetting("dateFormat", e.target.value)}
-                >
-                  <MenuItem value="DD/MM/YYYY">DD/MM/YYYY (31/03/2026)</MenuItem>
-                  <MenuItem value="MM/DD/YYYY">MM/DD/YYYY (03/31/2026)</MenuItem>
-                  <MenuItem value="YYYY-MM-DD">YYYY-MM-DD (2026-03-31)</MenuItem>
-                  <MenuItem value="DD MMM YYYY">DD MMM YYYY (31 Mar 2026)</MenuItem>
-                </Select>
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    [
+                      { value: "DD/MM/YYYY", label: "DD/MM/YYYY (31/03/2026)" },
+                      { value: "MM/DD/YYYY", label: "MM/DD/YYYY (03/31/2026)" },
+                      { value: "YYYY-MM-DD", label: "YYYY-MM-DD (2026-03-31)" },
+                      { value: "DD MMM YYYY", label: "DD MMM YYYY (31 Mar 2026)" },
+                    ],
+                    settings.dateFormat,
+                    (value) => updateSetting("dateFormat", value)
+                  )}
+                  size="small"
+                  renderInput={(params) => (
+                    <TextField {...params} label="Date Format" />
+                  )}
+                />
               </FormControl>
             </CardContent>
           </Card>
@@ -333,17 +347,22 @@ const Settings = () => {
                 Currency Symbol
               </Typography>
               <FormControl size="small" fullWidth>
-                <InputLabel>Currency</InputLabel>
-                <Select
-                  label="Currency"
-                  value={settings.currencySymbol}
-                  onChange={(e) => updateSetting("currencySymbol", e.target.value)}
-                >
-                  <MenuItem value="₹">₹ — Indian Rupee (INR)</MenuItem>
-                  <MenuItem value="$">$ — US Dollar (USD)</MenuItem>
-                  <MenuItem value="€">€ — Euro (EUR)</MenuItem>
-                  <MenuItem value="£">£ — British Pound (GBP)</MenuItem>
-                </Select>
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    [
+                      { value: "₹", label: "₹ — Indian Rupee (INR)" },
+                      { value: "$", label: "$ — US Dollar (USD)" },
+                      { value: "€", label: "€ — Euro (EUR)" },
+                      { value: "£", label: "£ — British Pound (GBP)" },
+                    ],
+                    settings.currencySymbol,
+                    (value) => updateSetting("currencySymbol", value)
+                  )}
+                  size="small"
+                  renderInput={(params) => (
+                    <TextField {...params} label="Currency" />
+                  )}
+                />
               </FormControl>
             </CardContent>
           </Card>
@@ -355,17 +374,22 @@ const Settings = () => {
                 Fiscal Year Start
               </Typography>
               <FormControl size="small" fullWidth>
-                <InputLabel>Starts From</InputLabel>
-                <Select
-                  label="Starts From"
-                  value={settings.fiscalYearStart}
-                  onChange={(e) => updateSetting("fiscalYearStart", e.target.value)}
-                >
-                  <MenuItem value="april">April (Indian FY)</MenuItem>
-                  <MenuItem value="january">January (Calendar Year)</MenuItem>
-                  <MenuItem value="july">July</MenuItem>
-                  <MenuItem value="october">October</MenuItem>
-                </Select>
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    [
+                      { value: "april", label: "April (Indian FY)" },
+                      { value: "january", label: "January (Calendar Year)" },
+                      { value: "july", label: "July" },
+                      { value: "october", label: "October" },
+                    ],
+                    settings.fiscalYearStart,
+                    (value) => updateSetting("fiscalYearStart", value)
+                  )}
+                  size="small"
+                  renderInput={(params) => (
+                    <TextField {...params} label="Starts From" />
+                  )}
+                />
               </FormControl>
             </CardContent>
           </Card>
@@ -588,3 +612,5 @@ const Settings = () => {
 };
 
 export default Settings;
+
+

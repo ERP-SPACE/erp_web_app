@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -7,7 +8,6 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  MenuItem,
   Grid,
   Chip,
   Typography,
@@ -23,11 +23,13 @@ import {
 } from "@mui/icons-material";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import inventoryService from "../../services/inventoryService";
 import {
   formatCurrency,
   formatDate,
+  formatInches,
   formatNumber,
   getRollStatusColor,
 } from "../../utils/formatters";
@@ -46,6 +48,15 @@ const Rolls = () => {
     status: "",
     barcode: "",
   });
+  const statusOptions = [
+    { value: "", label: "All" },
+    { value: "Unmapped", label: "Unmapped" },
+    { value: "Mapped", label: "Mapped" },
+    { value: "Allocated", label: "Allocated" },
+    { value: "Dispatched", label: "Dispatched" },
+    { value: "Returned", label: "Returned" },
+    { value: "Scrap", label: "Scrap" },
+  ];
 
   const fetchRolls = useCallback(async () => {
     setLoading(true);
@@ -128,7 +139,11 @@ const Rolls = () => {
     { field: "categoryName", headerName: "Category" },
     { field: "gsm", headerName: "GSM" },
     { field: "qualityName", headerName: "Quality" },
-    { field: "widthInches", headerName: 'Width"' },
+    {
+      field: "widthInches",
+      headerName: 'Width"',
+      renderCell: (params) => formatInches(params.value),
+    },
     {
       field: "currentLengthMeters",
       headerName: "Length (m)",
@@ -173,24 +188,16 @@ const Rolls = () => {
       <Paper sx={{ p: 2, mb: 2 }}>
         <Grid container spacing={2}>
           <Grid item xs={12} md={3}>
-            <TextField
-              select
-              fullWidth
-              label="Status"
-              value={filters.status}
-              onChange={(e) =>
-                setFilters({ ...filters, status: e.target.value })
-              }
+            <Autocomplete
+              {...buildSingleSelectAutocompleteProps(
+                statusOptions,
+                filters.status,
+                (value) => setFilters({ ...filters, status: value })
+              )}
               size="small"
-            >
-              <MenuItem value="">All</MenuItem>
-              <MenuItem value="Unmapped">Unmapped</MenuItem>
-              <MenuItem value="Mapped">Mapped</MenuItem>
-              <MenuItem value="Allocated">Allocated</MenuItem>
-              <MenuItem value="Dispatched">Dispatched</MenuItem>
-              <MenuItem value="Returned">Returned</MenuItem>
-              <MenuItem value="Scrap">Scrap</MenuItem>
-            </TextField>
+              fullWidth
+              renderInput={(params) => <TextField {...params} label="Status" />}
+            />
           </Grid>
           <Grid item xs={12} md={3}>
             <TextField
@@ -262,7 +269,7 @@ const Rolls = () => {
                   {selectedRoll.categoryName || "—"} — {selectedRoll.gsm || "—"} GSM — {selectedRoll.qualityName || "—"}
                 </Typography>
                 <Typography variant="body2">
-                  Width: {selectedRoll.widthInches}" | Length: {formatNumber(selectedRoll.currentLengthMeters ?? selectedRoll.originalLengthMeters)}m
+                  Width: {formatInches(selectedRoll.widthInches)} | Length: {formatNumber(selectedRoll.currentLengthMeters ?? selectedRoll.originalLengthMeters)}m
                 </Typography>
               </Grid>
 

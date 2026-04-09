@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -7,7 +8,6 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  MenuItem,
   Grid,
   Table,
   TableBody,
@@ -31,12 +31,14 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import salesService from "../../services/salesService";
 import inventoryService from "../../services/inventoryService";
 import {
   formatCurrency,
   formatDate,
+  formatInches,
   getStatusColor,
 } from "../../utils/formatters";
 
@@ -59,6 +61,10 @@ const SalesInvoices = () => {
   const [selectedDC, setSelectedDC] = useState(null);
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const deliveryChallanOptions = deliveryChallans.map((dc) => ({
+    value: dc._id,
+    label: `${dc.dcNumber} - ${dc.customerName}`,
+  }));
   const [confirmPost, setConfirmPost] = useState(false);
   const [showProfitDialog, setShowProfitDialog] = useState(false);
 
@@ -461,21 +467,23 @@ const SalesInvoices = () => {
                   control={control}
                   rules={{ required: "Delivery Challan is required" }}
                   render={({ field }) => (
-                    <TextField
-                      {...field}
-                      select
+                    <Autocomplete
+                      {...buildSingleSelectAutocompleteProps(
+                        deliveryChallanOptions,
+                        field.value,
+                        field.onChange
+                      )}
                       fullWidth
-                      label="Select Customer"
-                      error={!!errors.deliveryChallanId}
-                      helperText={errors.deliveryChallanId?.message}
                       disabled={!!selectedInvoice}
-                    >
-                      {deliveryChallans.map((dc) => (
-                        <MenuItem key={dc._id} value={dc._id}>
-                          {dc.dcNumber} - {dc.customerName}
-                        </MenuItem>
-                      ))}
-                    </TextField>
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Select Customer"
+                          error={!!errors.deliveryChallanId}
+                          helperText={errors.deliveryChallanId?.message}
+                        />
+                      )}
+                    />
                   )}
                 />
               </Grid>
@@ -542,7 +550,7 @@ const SalesInvoices = () => {
                         <TableCell>{line.categoryName}</TableCell>
                         <TableCell>{line.gsm}</TableCell>
                         <TableCell>{line.qualityName}</TableCell>
-                        <TableCell>{line.widthInches}</TableCell>
+                        <TableCell>{formatInches(line.widthInches)}</TableCell>
                         <TableCell>{line.billedLengthMeters}</TableCell>
                         <TableCell>
                           {formatCurrency(line.ratePerRoll)}
@@ -695,7 +703,7 @@ const SalesInvoices = () => {
                   >
                     <Typography variant="body2">
                       {line.rollNumber}: {line.categoryName} {line.gsm}GSM
-                      {line.widthInches}"
+                      {formatInches(line.widthInches)}
                     </Typography>
                     <Typography
                       variant="caption"

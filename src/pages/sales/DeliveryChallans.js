@@ -29,11 +29,13 @@ import {
 } from "@mui/icons-material";
 import { useForm, Controller, useFieldArray } from "react-hook-form";
 import DataTable from "../../components/common/DataTable";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import salesService from "../../services/salesService";
 import inventoryService from "../../services/inventoryService";
 import {
   formatDate,
+  formatInches,
   formatNumber,
   getStatusColor,
 } from "../../utils/formatters";
@@ -46,6 +48,10 @@ const DeliveryChallans = () => {
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedChallan, setSelectedChallan] = useState(null);
   const [selectedSO, setSelectedSO] = useState(null);
+  const salesOrderOptions = salesOrders.map((so) => ({
+    value: so._id,
+    label: `${so.soNumber} - ${so.customerName}`,
+  }));
 
   const {
     control,
@@ -449,21 +455,23 @@ const DeliveryChallans = () => {
                   control={control}
                   rules={{ required: "Sales Order is required" }}
                   render={({ field }) => (
-                    <TextField
-                      {...field}
-                      select
+                    <Autocomplete
+                      {...buildSingleSelectAutocompleteProps(
+                        salesOrderOptions,
+                        field.value,
+                        field.onChange
+                      )}
                       fullWidth
-                      label="Sales Order"
-                      error={!!errors.salesOrderId}
-                      helperText={errors.salesOrderId?.message}
                       disabled={!!selectedChallan}
-                    >
-                      {salesOrders.map((so) => (
-                        <MenuItem key={so._id} value={so._id}>
-                          {so.soNumber} - {so.customerName}
-                        </MenuItem>
-                      ))}
-                    </TextField>
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Sales Order"
+                          error={!!errors.salesOrderId}
+                          helperText={errors.salesOrderId?.message}
+                        />
+                      )}
+                    />
                   )}
                 />
               </Grid>
@@ -567,7 +575,7 @@ const DeliveryChallans = () => {
                             <TableCell>{qty}</TableCell>
                             <TableCell>{dispatched}</TableCell>
                             <TableCell>{balance}</TableCell>
-                            <TableCell>{resolveFromSku(line, "widthInches")}</TableCell>
+                            <TableCell>{formatInches(resolveFromSku(line, "widthInches"))}</TableCell>
                             <TableCell>
                               {resolveFromSku(line, "lengthMetersPerRoll")}
                             </TableCell>
@@ -609,7 +617,7 @@ const DeliveryChallans = () => {
                       <TableCell>{resolveFromSku(field, "categoryName")}</TableCell>
                       <TableCell>{resolveFromSku(field, "gsm")}</TableCell>
                       <TableCell>{resolveFromSku(field, "qualityName")}</TableCell>
-                      <TableCell>{resolveFromSku(field, "widthInches")}</TableCell>
+                      <TableCell>{formatInches(resolveFromSku(field, "widthInches"))}</TableCell>
                       <TableCell>{field.shippedLengthMeters}</TableCell>
                       <TableCell>
                         <Controller

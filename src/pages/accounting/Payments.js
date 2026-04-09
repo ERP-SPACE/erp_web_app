@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -32,6 +33,7 @@ import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import accountingService from "../../services/accountingService";
 import masterService from "../../services/masterService";
@@ -81,6 +83,26 @@ const Payments = () => {
   });
 
   const watchType = watch("type");
+
+  const paymentTypeOptions = [
+    { value: "Receipt", label: "Receipt (from Customer)" },
+    { value: "Payment", label: "Payment (to Supplier)" },
+  ];
+  const paymentModeOptions = [
+    { value: "Cash", label: "Cash" },
+    { value: "NEFT", label: "NEFT" },
+    { value: "UPI", label: "UPI" },
+    { value: "Cheque", label: "Cheque" },
+    { value: "RTGS", label: "RTGS" },
+  ];
+  const customerOptions = customers.map((customer) => ({
+    value: customer._id,
+    label: customer.companyName || customer.customerCode || "Customer",
+  }));
+  const supplierOptions = suppliers.map((supplier) => ({
+    value: supplier._id,
+    label: supplier.name,
+  }));
   const watchCustomerId = watch("customerId");
   const watchSupplierId = watch("supplierId");
   const watchAllocations = watch("allocations");
@@ -316,20 +338,23 @@ const Payments = () => {
                   control={control}
                   rules={{ required: "Type is required" }}
                   render={({ field }) => (
-                    <TextField
-                      {...field}
-                      select
+                    <Autocomplete
+                      {...buildSingleSelectAutocompleteProps(
+                        paymentTypeOptions,
+                        field.value,
+                        field.onChange
+                      )}
                       fullWidth
-                      label="Type"
-                      error={!!errors.type}
-                      helperText={errors.type?.message}
                       disabled={!!selectedPayment}
-                    >
-                      <MenuItem value="Receipt">
-                        Receipt (from Customer)
-                      </MenuItem>
-                      <MenuItem value="Payment">Payment (to Supplier)</MenuItem>
-                    </TextField>
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Type"
+                          error={!!errors.type}
+                          helperText={errors.type?.message}
+                        />
+                      )}
+                    />
                   )}
                 />
               </Grid>
@@ -340,20 +365,22 @@ const Payments = () => {
                   control={control}
                   rules={{ required: "Payment mode is required" }}
                   render={({ field }) => (
-                    <TextField
-                      {...field}
-                      select
+                    <Autocomplete
+                      {...buildSingleSelectAutocompleteProps(
+                        paymentModeOptions,
+                        field.value,
+                        field.onChange
+                      )}
                       fullWidth
-                      label="Payment Mode"
-                      error={!!errors.mode}
-                      helperText={errors.mode?.message}
-                    >
-                      <MenuItem value="Cash">Cash</MenuItem>
-                      <MenuItem value="NEFT">NEFT</MenuItem>
-                      <MenuItem value="UPI">UPI</MenuItem>
-                      <MenuItem value="Cheque">Cheque</MenuItem>
-                      <MenuItem value="RTGS">RTGS</MenuItem>
-                    </TextField>
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Payment Mode"
+                          error={!!errors.mode}
+                          helperText={errors.mode?.message}
+                        />
+                      )}
+                    />
                   )}
                 />
               </Grid>
@@ -365,23 +392,23 @@ const Payments = () => {
                     control={control}
                     rules={{ required: "Customer is required" }}
                     render={({ field }) => (
-                      <TextField
-                        {...field}
-                        select
+                      <Autocomplete
+                        {...buildSingleSelectAutocompleteProps(
+                          customerOptions,
+                          field.value,
+                          field.onChange
+                        )}
                         fullWidth
-                        label="Customer"
-                        error={!!errors.customerId}
-                        helperText={errors.customerId?.message}
                         disabled={!!selectedPayment}
-                      >
-                        {customers.map((customer) => (
-                          <MenuItem key={customer._id} value={customer._id}>
-                            {customer.companyName ||
-                              customer.customerCode ||
-                              "Customer"}
-                          </MenuItem>
-                        ))}
-                      </TextField>
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Customer"
+                            error={!!errors.customerId}
+                            helperText={errors.customerId?.message}
+                          />
+                        )}
+                      />
                     )}
                   />
                 </Grid>
@@ -394,21 +421,23 @@ const Payments = () => {
                     control={control}
                     rules={{ required: "Supplier is required" }}
                     render={({ field }) => (
-                      <TextField
-                        {...field}
-                        select
+                      <Autocomplete
+                        {...buildSingleSelectAutocompleteProps(
+                          supplierOptions,
+                          field.value,
+                          field.onChange
+                        )}
                         fullWidth
-                        label="Supplier"
-                        error={!!errors.supplierId}
-                        helperText={errors.supplierId?.message}
                         disabled={!!selectedPayment}
-                      >
-                        {suppliers.map((supplier) => (
-                          <MenuItem key={supplier._id} value={supplier._id}>
-                            {supplier.name}
-                          </MenuItem>
-                        ))}
-                      </TextField>
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            label="Supplier"
+                            error={!!errors.supplierId}
+                            helperText={errors.supplierId?.message}
+                          />
+                        )}
+                      />
                     )}
                   />
                 </Grid>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -16,6 +17,7 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import masterService from "../../services/masterService";
 
@@ -29,6 +31,22 @@ const Products = () => {
   const [openConfirm, setOpenConfirm] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [deleteId, setDeleteId] = useState(null);
+  const categoryOptions = categories.map((cat) => ({
+    value: cat._id,
+    label: cat.name,
+  }));
+  const gsmOptions = gsmList.map((gsm) => ({
+    value: gsm._id,
+    label: gsm.name,
+  }));
+  const qualityOptions = qualityList.map((quality) => ({
+    value: quality._id,
+    label: quality.name,
+  }));
+  const defaultLengthOptions = [1000, 1500, 2000].map((length) => ({
+    value: length,
+    label: `${length} m`,
+  }));
 
   const {
     control,
@@ -357,27 +375,28 @@ const Products = () => {
               control={control}
               rules={{ required: "Category is required" }}
               render={({ field }) => (
-                <TextField
-                  {...field}
-                  select
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    categoryOptions,
+                    field.value,
+                    (value) => {
+                      setHsnTouched(false);
+                      setTaxTouched(false);
+                      field.onChange(value);
+                    }
+                  )}
                   fullWidth
-                  label="Category"
-                  margin="normal"
-                  error={!!errors.categoryId}
-                  helperText={errors.categoryId?.message}
                   disabled={!!selectedProduct}
-                  onChange={(e) => {
-                    setHsnTouched(false);
-                    setTaxTouched(false);
-                    field.onChange(e);
-                  }}
-                >
-                  {categories.map((cat) => (
-                    <MenuItem key={cat._id} value={cat._id}>
-                      {cat.name}
-                    </MenuItem>
-                  ))}
-                </TextField>
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Category"
+                      margin="normal"
+                      error={!!errors.categoryId}
+                      helperText={errors.categoryId?.message}
+                    />
+                  )}
+                />
               )}
             />
             <Controller
@@ -385,22 +404,24 @@ const Products = () => {
               control={control}
               rules={{ required: "GSM is required" }}
               render={({ field }) => (
-                <TextField
-                  {...field}
-                  select
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    gsmOptions,
+                    field.value,
+                    field.onChange
+                  )}
                   fullWidth
-                  label="GSM"
-                  margin="normal"
-                  error={!!errors.gsmId}
-                  helperText={errors.gsmId?.message}
                   disabled={!!selectedProduct}
-                >
-                  {gsmList.map((gsm) => (
-                    <MenuItem key={gsm._id} value={gsm._id}>
-                      {gsm.name}
-                    </MenuItem>
-                  ))}
-                </TextField>
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="GSM"
+                      margin="normal"
+                      error={!!errors.gsmId}
+                      helperText={errors.gsmId?.message}
+                    />
+                  )}
+                />
               )}
             />
             <Controller
@@ -408,22 +429,24 @@ const Products = () => {
               control={control}
               rules={{ required: "Quality is required" }}
               render={({ field }) => (
-                <TextField
-                  {...field}
-                  select
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    qualityOptions,
+                    field.value,
+                    field.onChange
+                  )}
                   fullWidth
-                  label="Quality"
-                  margin="normal"
-                  error={!!errors.qualityId}
-                  helperText={errors.qualityId?.message}
                   disabled={!!selectedProduct}
-                >
-                  {qualityList.map((quality) => (
-                    <MenuItem key={quality._id} value={quality._id}>
-                      {quality.name}
-                    </MenuItem>
-                  ))}
-                </TextField>
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Quality"
+                      margin="normal"
+                      error={!!errors.qualityId}
+                      helperText={errors.qualityId?.message}
+                    />
+                  )}
+                />
               )}
             />
             <Controller
@@ -463,21 +486,23 @@ const Products = () => {
               control={control}
               rules={{ required: "Default length is required" }}
               render={({ field }) => (
-                <TextField
-                  {...field}
-                  select
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    defaultLengthOptions,
+                    field.value,
+                    field.onChange
+                  )}
                   fullWidth
-                  label="Default Length (meters)"
-                  margin="normal"
-                  error={!!errors.defaultLengthMeters}
-                  helperText={errors.defaultLengthMeters?.message}
-                >
-                  {[1000, 1500, 2000].map((length) => (
-                    <MenuItem key={length} value={length}>
-                      {length} m
-                    </MenuItem>
-                  ))}
-                </TextField>
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Default Length (meters)"
+                      margin="normal"
+                      error={!!errors.defaultLengthMeters}
+                      helperText={errors.defaultLengthMeters?.message}
+                    />
+                  )}
+                />
               )}
             />
             <Controller

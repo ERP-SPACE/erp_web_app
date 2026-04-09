@@ -749,7 +749,6 @@ const Suppliers = () => {
                   <Controller
                     name="addressline2"
                     control={control}
-                    rules={{ required: "Address line 2 is required" }}
                     render={({ field }) => (
                       <TextField
                         {...field}

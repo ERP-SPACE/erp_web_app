@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -7,7 +8,6 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  MenuItem,
   FormControlLabel,
   Switch,
   Chip,
@@ -17,6 +17,7 @@ import {
 import { useForm, Controller } from "react-hook-form";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import masterService from "../../services/masterService";
 
@@ -27,6 +28,10 @@ const Categories = () => {
   const [openConfirm, setOpenConfirm] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [deleteId, setDeleteId] = useState(null);
+  const categoryNameOptions = [
+    { value: "Sublimation", label: "Sublimation" },
+    { value: "Butter", label: "Butter" },
+  ];
 
   const {
     control,
@@ -216,14 +221,17 @@ const Categories = () => {
               control={control}
               rules={{ required: "Category name is required" }}
               render={({ field }) => (
-                <TextField
-                  {...field}
-                  select
+                <Autocomplete
+                  {...buildSingleSelectAutocompleteProps(
+                    categoryNameOptions,
+                    field.value,
+                    (value) => {
+                      field.onChange(value);
+                      const mapping = { Sublimation: "SUB", Butter: "BTR" };
+                      setValue("code", mapping[value] || "");
+                    }
+                  )}
                   fullWidth
-                  label="Category Name"
-                  margin="normal"
-                  error={!!errors.name}
-                  helperText={errors.name?.message}
                   sx={{
                     "& .MuiOutlinedInput-root": {
                       backgroundColor: "grey.50",
@@ -235,17 +243,16 @@ const Categories = () => {
                       },
                     },
                   }}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    field.onChange(value);
-                    // Auto-derive code from name as per enum mapping
-                    const mapping = { Sublimation: "SUB", Butter: "BTR" };
-                    setValue("code", mapping[value] || "");
-                  }}
-                >
-                  <MenuItem value="Sublimation">Sublimation</MenuItem>
-                  <MenuItem value="Butter">Butter</MenuItem>
-                </TextField>
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Category Name"
+                      margin="normal"
+                      error={!!errors.name}
+                      helperText={errors.name?.message}
+                    />
+                  )}
+                />
               )}
             />
             <Controller

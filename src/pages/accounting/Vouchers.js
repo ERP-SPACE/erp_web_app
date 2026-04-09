@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -33,6 +34,7 @@ import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import accountingService from "../../services/accountingService";
 import masterService from "../../services/masterService";
@@ -46,6 +48,21 @@ const Vouchers = () => {
   const [openViewDialog, setOpenViewDialog] = useState(false);
   const [selectedVoucher, setSelectedVoucher] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
+
+  const voucherTypeOptions = [
+    { value: "Journal", label: "Journal Voucher" },
+    { value: "Contra", label: "Contra Voucher" },
+    { value: "Payment", label: "Payment Voucher" },
+    { value: "Receipt", label: "Receipt Voucher" },
+  ];
+  const ledgerOptions = [
+    { value: "", label: "Select Ledger" },
+    ...ledgers.map((ledger) => ({ value: ledger._id, label: ledger.name })),
+  ];
+  const entryTypeOptions = [
+    { value: "Debit", label: "Debit" },
+    { value: "Credit", label: "Credit" },
+  ];
 
   const {
     control,
@@ -304,19 +321,22 @@ const Vouchers = () => {
                   control={control}
                   rules={{ required: "Voucher Type is required" }}
                   render={({ field }) => (
-                    <TextField
-                      {...field}
-                      select
+                    <Autocomplete
+                      {...buildSingleSelectAutocompleteProps(
+                        voucherTypeOptions,
+                        field.value,
+                        field.onChange
+                      )}
                       fullWidth
-                      label="Voucher Type"
-                      error={!!errors.voucherType}
-                      helperText={errors.voucherType?.message}
-                    >
-                      <MenuItem value="Journal">Journal Voucher</MenuItem>
-                      <MenuItem value="Contra">Contra Voucher</MenuItem>
-                      <MenuItem value="Payment">Payment Voucher</MenuItem>
-                      <MenuItem value="Receipt">Receipt Voucher</MenuItem>
-                    </TextField>
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Voucher Type"
+                          error={!!errors.voucherType}
+                          helperText={errors.voucherType?.message}
+                        />
+                      )}
+                    />
                   )}
                 />
               </Grid>
@@ -367,22 +387,16 @@ const Vouchers = () => {
                           name={`entries.${index}.ledgerId`}
                           control={control}
                           render={({ field }) => (
-                            <TextField
-                              {...field}
-                              select
+                            <Autocomplete
+                              {...buildSingleSelectAutocompleteProps(
+                                ledgerOptions,
+                                field.value,
+                                (value) => handleLedgerChange(index, value)
+                              )}
                               size="small"
                               fullWidth
-                              onChange={(e) =>
-                                handleLedgerChange(index, e.target.value)
-                              }
-                            >
-                              <MenuItem value="">Select Ledger</MenuItem>
-                              {ledgers.map((ledger) => (
-                                <MenuItem key={ledger._id} value={ledger._id}>
-                                  {ledger.name}
-                                </MenuItem>
-                              ))}
-                            </TextField>
+                              renderInput={(params) => <TextField {...params} />}
+                            />
                           )}
                         />
                       </TableCell>
@@ -391,15 +405,16 @@ const Vouchers = () => {
                           name={`entries.${index}.type`}
                           control={control}
                           render={({ field }) => (
-                            <TextField
-                              {...field}
-                              select
+                            <Autocomplete
+                              {...buildSingleSelectAutocompleteProps(
+                                entryTypeOptions,
+                                field.value,
+                                field.onChange
+                              )}
                               size="small"
                               sx={{ width: 100 }}
-                            >
-                              <MenuItem value="Debit">Debit</MenuItem>
-                              <MenuItem value="Credit">Credit</MenuItem>
-                            </TextField>
+                              renderInput={(params) => <TextField {...params} />}
+                            />
                           )}
                         />
                       </TableCell>

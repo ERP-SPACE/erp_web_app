@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -39,6 +40,7 @@ import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import purchaseService from "../../services/purchaseService";
 import inventoryService from "../../services/inventoryService";
@@ -73,6 +75,25 @@ const PurchaseInvoices = () => {
   const [pendingLineValues, setPendingLineValues] = useState({});
   const [openLandedCostDialog, setOpenLandedCostDialog] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const supplierOptions = suppliers.map((supplier) => ({
+    value: supplier._id,
+    label: supplier.name,
+  }));
+  const skuOptions = skus.map((sku) => ({
+    value: sku._id,
+    label: sku.skuCode,
+  }));
+  const landedCostTypeOptions = [
+    { value: "Freight", label: "Freight" },
+    { value: "Duty", label: "Duty" },
+    { value: "Clearing", label: "Clearing" },
+    { value: "Misc", label: "Misc" },
+  ];
+  const landedCostAllocationOptions = [
+    { value: "ROLL", label: "Per Roll" },
+    { value: "METER", label: "Per Meter" },
+    { value: "VALUE", label: "By Value" },
+  ];
   const [confirmPost, setConfirmPost] = useState(false);
   const [currentUserState, setCurrentUserState] = useState("");
   const [inwardDetail, setInwardDetail] = useState({
@@ -1205,22 +1226,23 @@ const PurchaseInvoices = () => {
                   control={control}
                   rules={{ required: "Supplier is required" }}
                   render={({ field }) => (
-                    <TextField
-                      {...field}
-                      select
+                    <Autocomplete
+                      {...buildSingleSelectAutocompleteProps(
+                        supplierOptions,
+                        field.value,
+                        handleSupplierChange
+                      )}
                       fullWidth
-                      label="Supplier"
-                      error={!!errors.supplierId}
-                      helperText={errors.supplierId?.message}
-                      onChange={(e) => handleSupplierChange(e.target.value)}
                       disabled={!!selectedInvoice}
-                    >
-                      {suppliers.map((supplier) => (
-                        <MenuItem key={supplier._id} value={supplier._id}>
-                          {supplier.name}
-                        </MenuItem>
-                      ))}
-                    </TextField>
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Supplier"
+                          error={!!errors.supplierId}
+                          helperText={errors.supplierId?.message}
+                        />
+                      )}
+                    />
                   )}
                 />
               </Grid>
@@ -1389,24 +1411,19 @@ const PurchaseInvoices = () => {
                             <TableCell>{field.poNumber || ""}</TableCell>
                             <TableCell>
                               {isManual ? (
-                                <TextField
-                                  select
+                                <Autocomplete
+                                  {...buildSingleSelectAutocompleteProps(
+                                    skuOptions,
+                                    normalizedSkuId,
+                                    (value) =>
+                                      handleManualLineSKUChange(index, value)
+                                  )}
                                   size="small"
                                   fullWidth
-                                  value={normalizedSkuId}
-                                  onChange={(e) =>
-                                    handleManualLineSKUChange(
-                                      index,
-                                      e.target.value
-                                    )
-                                  }
-                                >
-                                  {skus.map((sku) => (
-                                    <MenuItem key={sku._id} value={sku._id}>
-                                      {sku.skuCode}
-                                    </MenuItem>
-                                  ))}
-                                </TextField>
+                                  renderInput={(params) => (
+                                    <TextField {...params} />
+                                  )}
+                                />
                               ) : (
                                 field.skuCode || field.skuId
                               )}
@@ -1680,17 +1697,18 @@ const PurchaseInvoices = () => {
                             name={`landedCosts.${index}.type`}
                             control={control}
                             render={({ field }) => (
-                              <TextField
-                                {...field}
-                                select
+                              <Autocomplete
+                                {...buildSingleSelectAutocompleteProps(
+                                  landedCostTypeOptions,
+                                  field.value,
+                                  field.onChange
+                                )}
                                 size="small"
                                 fullWidth
-                              >
-                                <MenuItem value="Freight">Freight</MenuItem>
-                                <MenuItem value="Duty">Duty</MenuItem>
-                                <MenuItem value="Clearing">Clearing</MenuItem>
-                                <MenuItem value="Misc">Misc</MenuItem>
-                              </TextField>
+                                renderInput={(params) => (
+                                  <TextField {...params} />
+                                )}
+                              />
                             )}
                           />
                         </TableCell>
@@ -1719,16 +1737,18 @@ const PurchaseInvoices = () => {
                             name={`landedCosts.${index}.allocationBasis`}
                             control={control}
                             render={({ field }) => (
-                              <TextField
-                                {...field}
-                                select
+                              <Autocomplete
+                                {...buildSingleSelectAutocompleteProps(
+                                  landedCostAllocationOptions,
+                                  field.value,
+                                  field.onChange
+                                )}
                                 size="small"
                                 fullWidth
-                              >
-                                <MenuItem value="ROLL">Per Roll</MenuItem>
-                                <MenuItem value="METER">Per Meter</MenuItem>
-                                <MenuItem value="VALUE">By Value</MenuItem>
-                              </TextField>
+                                renderInput={(params) => (
+                                  <TextField {...params} />
+                                )}
+                              />
                             )}
                           />
                         </TableCell>

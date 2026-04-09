@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import {
+  Autocomplete,
   Box,
   Button,
   Dialog,
@@ -32,11 +33,13 @@ import {
 import { useForm, Controller, useFieldArray } from "react-hook-form";
 import DataTable from "../../components/common/DataTable";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import purchaseService from "../../services/purchaseService";
 import inventoryService from "../../services/inventoryService";
 import {
   formatDate,
+  formatInches,
   formatNumber,
   getStatusColor,
 } from "../../utils/formatters";
@@ -46,6 +49,10 @@ const GRNs = () => {
   const [grns, setGRNs] = useState([]);
   const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [selectedPO, setSelectedPO] = useState(null);
+  const purchaseOrderOptions = purchaseOrders.map((po) => ({
+    value: po._id,
+    label: `${po.poNumber} - ${po.supplierName}`,
+  }));
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedGRN, setSelectedGRN] = useState(null);
   const [confirmPost, setConfirmPost] = useState(false);
@@ -311,21 +318,23 @@ const GRNs = () => {
                   control={control}
                   rules={{ required: "Purchase Order is required" }}
                   render={({ field }) => (
-                    <TextField
-                      {...field}
-                      select
+                    <Autocomplete
+                      {...buildSingleSelectAutocompleteProps(
+                        purchaseOrderOptions,
+                        field.value,
+                        field.onChange
+                      )}
                       fullWidth
-                      label="Purchase Order"
-                      error={!!errors.purchaseOrderId}
-                      helperText={errors.purchaseOrderId?.message}
                       disabled={!!selectedGRN}
-                    >
-                      {purchaseOrders.map((po) => (
-                        <MenuItem key={po._id} value={po._id}>
-                          {po.poNumber} - {po.supplierName}
-                        </MenuItem>
-                      ))}
-                    </TextField>
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Purchase Order"
+                          error={!!errors.purchaseOrderId}
+                          helperText={errors.purchaseOrderId?.message}
+                        />
+                      )}
+                    />
                   )}
                 />
               </Grid>
@@ -392,7 +401,7 @@ const GRNs = () => {
                       <TableCell>{field.categoryName}</TableCell>
                       <TableCell>{field.gsm}</TableCell>
                       <TableCell>{field.qualityName}</TableCell>
-                      <TableCell>{field.widthInches}"</TableCell>
+                      <TableCell>{formatInches(field.widthInches)}</TableCell>
                       <TableCell>{field.lengthMetersPerRoll}</TableCell>
                       <TableCell>{field.qtyRolls}</TableCell>
                       <TableCell>{field.totalMeters}</TableCell>

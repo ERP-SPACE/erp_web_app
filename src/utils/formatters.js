@@ -32,6 +32,15 @@ export const formatDateTime = (date) => {
   });
 };
 
+export const formatInches = (value, fallback = "-") => {
+  if (value === null || value === undefined) return fallback;
+  const raw = String(value).trim();
+  if (!raw) return fallback;
+  if (raw === "-") return raw;
+  if (raw.includes('"')) return raw;
+  return `${raw}"`;
+};
+
 export const getStatusColor = (status) => {
   const statusColors = {
     Draft: "default",
