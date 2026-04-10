@@ -91,7 +91,7 @@ const menuItems = [
     children: [
       { title: "Purchase Orders", path: "/purchase-orders", icon: <Assignment /> },
       { title: "Purchase Invoices", path: "/purchase-invoices", icon: <Receipt /> },
-      { title: "GRNs", path: "/grns", icon: <CheckCircleIcon /> },
+      { title: "Purchase Returns", path: "/purchase-returns", icon: <Receipt /> },
     ],
   },
   {
@@ -110,6 +110,7 @@ const menuItems = [
       { title: "Sales Orders", path: "/sales-orders", icon: <Assignment /> },
       { title: "Delivery Challans", path: "/delivery-challans", icon: <LocalShipping /> },
       { title: "Sales Invoices", path: "/sales-invoices", icon: <Receipt /> },
+      { title: "Sales Returns", path: "/sales-returns", icon: <Receipt /> },
     ],
   },
   {

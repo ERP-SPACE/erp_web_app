@@ -87,6 +87,23 @@ const salesService = {
       responseType: "blob",
     });
   },
+
+  // Sales Returns
+  getSalesReturns: async (params = {}) => {
+    return await api.get("/sales-returns", { params });
+  },
+
+  getSalesReturn: async (id) => {
+    return await api.get(`/sales-returns/${id}`);
+  },
+
+  createSalesReturn: async (data) => {
+    return await api.post("/sales-returns", data);
+  },
+
+  postSalesReturn: async (id) => {
+    return await api.post(`/sales-returns/${id}/post`);
+  },
 };
 
 export default salesService;

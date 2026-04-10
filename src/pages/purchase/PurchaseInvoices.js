@@ -33,6 +33,7 @@ import {
   Delete as DeleteIcon,
   CheckCircle as PostIcon,
   LocalShipping as LandedCostIcon,
+  CallSplit as BifurcateIcon,
   Close as CloseIcon,
   InfoOutlined as InfoIcon,
 } from "@mui/icons-material";
@@ -104,6 +105,11 @@ const PurchaseInvoices = () => {
   const [rollDetailsDialog, setRollDetailsDialog] = useState({
     open: false,
     line: null,
+    rows: [],
+  });
+  const [piBifurcationDialog, setPiBifurcationDialog] = useState({
+    open: false,
+    lineIndex: null,
     rows: [],
   });
   const [computedTotals, setComputedTotals] = useState({
@@ -327,11 +333,15 @@ const PurchaseInvoices = () => {
 
     // Price strictly on meters * base rate
     (watchLines || []).forEach((line) => {
+      const rollSummary = summarizeRollDetails(line.rollDetails || []);
       const meters =
-        Number(line.totalMeters) ||
+        // Single source of truth for meters:
+        // rollDetails (bifurcation) → inwardMeters → totalMeters → qty×meterPerRoll
+        Number(rollSummary.totalMeters) ||
         Number(line.inwardMeters) ||
+        Number(line.totalMeters) ||
         (Number(line.lengthMetersPerRoll) || 0) *
-          (Number(line.qtyRolls) || 0);
+        (Number(line.qtyRolls) || 0);
       const rate = Number(line.ratePerRoll) || 0;
       subtotal += meters * rate;
     });
@@ -449,8 +459,8 @@ const PurchaseInvoices = () => {
       const normalizedOrders = Array.isArray(ordersData)
         ? ordersData
         : Array.isArray(ordersData?.data)
-        ? ordersData.data
-        : [];
+          ? ordersData.data
+          : [];
 
       setPurchaseOrders(normalizedOrders);
       if (resetLines) {
@@ -512,6 +522,8 @@ const PurchaseInvoices = () => {
           poId: po._id,
           poNumber: po.poNumber,
           poLineId: line._id,
+          // Planned split (from PO). Used only to prefill PI roll-details dialog.
+          poBifurcations: Array.isArray(line.bifurcations) ? line.bifurcations : [],
           skuId: normalizedSkuId || "",
           skuCode:
             line.skuCode ||
@@ -545,10 +557,10 @@ const PurchaseInvoices = () => {
           totalMeters:
             line.totalMeters ??
             (Number(line.lengthMetersPerRoll) || 0) *
-              (Math.max(
-                (Number(line.qtyRolls) || 0) - (Number(line.invoicedQty) || 0),
-                0
-              ) || 0),
+            (Math.max(
+              (Number(line.qtyRolls) || 0) - (Number(line.invoicedQty) || 0),
+              0
+            ) || 0),
           lineTotal:
             line.lineTotal ??
             (Math.max(
@@ -629,6 +641,95 @@ const PurchaseInvoices = () => {
     return Math.ceil(meters / perRoll);
   };
 
+  const openPiBifurcationModal = (index) => {
+    const line = getValues(`lines.${index}`) || {};
+    const existing = getValues(`lines.${index}.rollDetails`) || [];
+    const totalMeters = Number(line.totalMeters) || 0;
+    const metersPerRoll = Number(line.lengthMetersPerRoll) || 0;
+    const poPlanDetails =
+      (Array.isArray(line.poBifurcations) && line.poBifurcations.length
+        ? line.poBifurcations
+        : Array.isArray(line.bifurcations)
+          ? line.bifurcations
+          : []) || [];
+
+    const collapsedExisting = collapseRollsToGroups(existing);
+    const rows =
+      collapsedExisting.length > 0
+        ? collapsedExisting
+        : (() => {
+          const plannedCollapsed = collapseRollsToGroups(
+            normalizeRollDetails(poPlanDetails)
+          );
+          if (plannedCollapsed.length > 0) return plannedCollapsed;
+
+          // Default real-world split: full rolls + remainder roll
+          if (totalMeters > 0 && metersPerRoll > 0) {
+            const fullRolls = Math.floor(totalMeters / metersPerRoll);
+            const remainder =
+              Math.round((totalMeters - fullRolls * metersPerRoll) * 100) /
+              100;
+            const seeded = [];
+            if (fullRolls > 0) seeded.push({ rollQty: fullRolls, metersPerRoll });
+            if (remainder > 0) seeded.push({ rollQty: 1, metersPerRoll: remainder });
+            if (seeded.length) return seeded;
+          }
+
+          return [{ rollQty: 0, metersPerRoll: metersPerRoll || 0 }];
+        })();
+
+    setPiBifurcationDialog({ open: true, lineIndex: index, rows });
+  };
+
+  const closePiBifurcationModal = () => {
+    setPiBifurcationDialog({ open: false, lineIndex: null, rows: [] });
+  };
+
+  const updatePiBifurcationRow = (rowIndex, key, value) => {
+    setPiBifurcationDialog((prev) => {
+      const nextRows = [...(prev.rows || [])];
+      nextRows[rowIndex] = { ...(nextRows[rowIndex] || {}), [key]: value };
+      return { ...prev, rows: nextRows };
+    });
+  };
+
+  const addPiBifurcationRow = () => {
+    setPiBifurcationDialog((prev) => ({
+      ...prev,
+      rows: [...(prev.rows || []), { rollQty: 0, metersPerRoll: 0 }],
+    }));
+  };
+
+  const removePiBifurcationRow = (rowIndex) => {
+    setPiBifurcationDialog((prev) => {
+      const next = [...(prev.rows || [])];
+      next.splice(rowIndex, 1);
+      return { ...prev, rows: next.length ? next : [{ rollQty: 0, metersPerRoll: 0 }] };
+    });
+  };
+
+  const savePiBifurcation = () => {
+    const idx = piBifurcationDialog.lineIndex;
+    if (idx === null || idx === undefined) {
+      closePiBifurcationModal();
+      return;
+    }
+
+    const rows = (piBifurcationDialog.rows || []).map((r) => ({
+      rollQty: Number(r.rollQty) || 0,
+      metersPerRoll: Number(r.metersPerRoll) || 0,
+    }));
+    const summary = summarizeRollDetails(rows);
+
+    setValue(`lines.${idx}.rollDetails`, summary.normalized);
+    setValue(`lines.${idx}.inwardRolls`, summary.totalRolls);
+    setValue(`lines.${idx}.inwardMeters`, summary.totalMeters);
+    // Keep "Total Meters" in sync with the bifurcation the user entered.
+    setValue(`lines.${idx}.totalMeters`, summary.totalMeters);
+
+    closePiBifurcationModal();
+  };
+
   const setPendingMetersWithDerivedRolls = (poLineId, meters, meterPerRoll) => {
     setPendingLineValues((prev) => ({
       ...prev,
@@ -647,6 +748,18 @@ const PurchaseInvoices = () => {
     const existingDetails =
       pending.rollDetails || line.rollDetails || line.pendingRollDetails || [];
     const baseMeters = Number(line.lengthMetersPerRoll) || 0;
+    const inboundMeters =
+      Number(pending.inwardMeters) > 0
+        ? Number(pending.inwardMeters)
+        : Number(line.inwardMeters) > 0
+          ? Number(line.inwardMeters)
+          : 0;
+    const poPlanDetails =
+      (Array.isArray(line.poBifurcations) && line.poBifurcations.length
+        ? line.poBifurcations
+        : Array.isArray(line.bifurcations)
+          ? line.bifurcations
+          : []) || [];
 
     // Existing details may be in the new per-roll format [{ lengthMeters }].
     // Collapse to groups [{ rollQty, metersPerRoll }] for a compact dialog UI.
@@ -654,20 +767,34 @@ const PurchaseInvoices = () => {
     const seedRows =
       collapsed.length > 0
         ? collapsed
-        : [
+        : (() => {
+          // First preference: prefill from PO planned bifurcation (plan), if present.
+          const plannedCollapsed = collapseRollsToGroups(
+            normalizeRollDetails(poPlanDetails)
+          );
+          if (plannedCollapsed.length > 0) return plannedCollapsed;
+
+          // Default real-world split:
+          // full rolls at default meters/roll + one partial roll for remainder.
+          if (inboundMeters > 0 && baseMeters > 0) {
+            const fullRolls = Math.floor(inboundMeters / baseMeters);
+            const remainder =
+              Math.round((inboundMeters - fullRolls * baseMeters) * 100) / 100;
+
+            const seeded = [];
+            if (fullRolls > 0) seeded.push({ rollQty: fullRolls, metersPerRoll: baseMeters });
+            if (remainder > 0) seeded.push({ rollQty: 1, metersPerRoll: remainder });
+
+            if (seeded.length) return seeded;
+          }
+
+          return [
             {
-              rollQty:
-                pending.inwardRolls ||
-                line.inwardRolls ||
-                line.qtyRolls ||
-                1,
-              metersPerRoll:
-                Number(pending.inwardMeters) > 0 &&
-                Number(pending.inwardRolls) > 0
-                  ? Number(pending.inwardMeters) / Number(pending.inwardRolls)
-                  : baseMeters,
+              rollQty: pending.inwardRolls || line.inwardRolls || line.qtyRolls || 1,
+              metersPerRoll: baseMeters,
             },
           ];
+        })();
 
     setRollDetailsDialog({
       open: true,
@@ -987,7 +1114,7 @@ const PurchaseInvoices = () => {
 
   const onSubmit = async (data) => {
     try {
-    const totals = computeTotals();
+      const totals = computeTotals();
       const primaryPurchaseOrderId =
         data.purchaseOrderIds?.[0] || data.purchaseOrderId || "";
       const supplierInfo =
@@ -1125,8 +1252,8 @@ const PurchaseInvoices = () => {
           row.grandTotal ??
           row.total ??
           (Number(row.subtotal) || 0) +
-            (Number(row.taxAmount) || 0) +
-            (Number(row.totalLandedCost) || 0);
+          (Number(row.taxAmount) || 0) +
+          (Number(row.totalLandedCost) || 0);
         return formatCurrency(amount || 0);
       },
     },
@@ -1365,8 +1492,6 @@ const PurchaseInvoices = () => {
                         <TableCell>PO Number</TableCell>
                         <TableCell>SKU</TableCell>
                         <TableCell>Base Rate</TableCell>
-                        <TableCell>Meter/Roll</TableCell>
-                        <TableCell>Roll Quantity</TableCell>
                         <TableCell>Total Meters</TableCell>
                         <TableCell>Total Amount</TableCell>
                         <TableCell>Inward Rolls</TableCell>
@@ -1385,11 +1510,16 @@ const PurchaseInvoices = () => {
                           watchLine.skuId ||
                           field.skuId ||
                           "";
+                        const rollSummary = summarizeRollDetails(
+                          watchLine.rollDetails || field.rollDetails || []
+                        );
                         const totalMeters =
+                          Number(rollSummary.totalMeters) ||
                           Number(watchLine.totalMeters ?? field.totalMeters) ||
                           (Number(watchLine.lengthMetersPerRoll) || 0) *
-                            (Number(watchLine.qtyRolls) || 0);
+                          (Number(watchLine.qtyRolls) || 0);
                         const amountMeters =
+                          Number(rollSummary.totalMeters) ||
                           Number(watchLine.inwardMeters) ||
                           totalMeters;
                         const totalAmount =
@@ -1397,14 +1527,22 @@ const PurchaseInvoices = () => {
                         const meterPerRoll =
                           Number(watchLine.lengthMetersPerRoll) || 0;
                         const inwardMeters =
-                          Number(watchLine.inwardMeters) || 0;
-                        const derivedInwardRolls = deriveInwardRolls(
-                          inwardMeters,
-                          meterPerRoll
+                          Number(rollSummary.totalMeters) ||
+                          Number(watchLine.inwardMeters) ||
+                          0;
+                        const ratePerRoll = Number(
+                          watchLine.ratePerRoll ?? field.ratePerRoll
+                        ) || 0;
+                        const derivedInwardRolls =
+                          Number(rollSummary.totalRolls) ||
+                          deriveInwardRolls(
+                            inwardMeters || totalMeters,
+                            meterPerRoll
+                          );
+                        const balanceOrder = Math.max(
+                          (Number(watchLine.qtyRolls) || 0) - derivedInwardRolls,
+                          0
                         );
-                        const balanceOrder =
-                          (Number(watchLine.qtyRolls) || 0) -
-                          derivedInwardRolls;
 
                         return (
                           <TableRow key={field.id}>
@@ -1431,73 +1569,44 @@ const PurchaseInvoices = () => {
                             <TableCell>
                               {isManual ? (
                                 <NumericFormat
-                                  value={watchLine.ratePerRoll}
+                                  value={ratePerRoll}
                                   customInput={TextField}
                                   size="small"
                                   thousandSeparator=","
                                   decimalScale={2}
-                                  sx={{ width: 110 }}
+                                  sx={{ width: 120 }}
                                   onValueChange={(values) => {
-                                    const rateVal = Number(values.value) || 0;
-                                    setValue(
-                                      `lines.${index}.ratePerRoll`,
-                                      rateVal
-                                    );
-                                    if (isManual) {
-                                      recomputeManualLineTotal(index, {
-                                        ratePerRoll: rateVal,
-                                      });
-                                    }
+                                    const val = Number(values.value) || 0;
+                                    setValue(`lines.${index}.ratePerRoll`, val);
+                                    recomputeManualLineTotal(index, {
+                                      ratePerRoll: val,
+                                    });
                                   }}
                                 />
                               ) : (
-                                formatCurrency(field.ratePerRoll)
+                                formatCurrency(ratePerRoll)
                               )}
                             </TableCell>
                             <TableCell>
-                              {isManual ? (
-                                <Controller
-                                  name={`lines.${index}.lengthMetersPerRoll`}
-                                  control={control}
-                                  render={({ field }) => (
-                                    <TextField
-                                      {...field}
-                                      type="number"
-                                      size="small"
-                                      sx={{ width: 110 }}
-                                    />
-                                  )}
-                                />
-                              ) : (
-                                field.lengthMetersPerRoll
-                              )}
+                              <Box
+                                sx={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  gap: 1,
+                                }}
+                              >
+                                <span>{totalMeters}</span>
+                                <Tooltip title="Bifurcate meters into rolls">
+                                  <IconButton
+                                    size="small"
+                                    onClick={() => openPiBifurcationModal(index)}
+                                  >
+                                    <BifurcateIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                              </Box>
                             </TableCell>
-                            <TableCell>
-                              {isManual ? (
-                                <Controller
-                                  name={`lines.${index}.qtyRolls`}
-                                  control={control}
-                                  render={({ field }) => (
-                                    <TextField
-                                      {...field}
-                                      type="number"
-                                      size="small"
-                                      sx={{ width: 90 }}
-                                      onChange={(e) => {
-                                        const val = Number(e.target.value) || 0;
-                                        field.onChange(val);
-                                        recomputeManualLineTotal(index, {
-                                          qtyRolls: val,
-                                        });
-                                      }}
-                                    />
-                                  )}
-                                />
-                              ) : (
-                                watchLines[index]?.qtyRolls
-                              )}
-                            </TableCell>
-                            <TableCell>{totalMeters}</TableCell>
                             <TableCell>{formatCurrency(totalAmount)}</TableCell>
                             <TableCell>
                               {isManual ? (
@@ -1512,9 +1621,7 @@ const PurchaseInvoices = () => {
                                         <Tooltip
                                           title={
                                             meterPerRoll > 0
-                                              ? `Derived as ceil(${
-                                                  inwardMeters || 0
-                                                } / ${meterPerRoll})`
+                                              ? `Derived as ceil(${inwardMeters || totalMeters || 0} / ${meterPerRoll})`
                                               : "Add meter/roll to derive inward rolls"
                                           }
                                         >
@@ -1567,68 +1674,61 @@ const PurchaseInvoices = () => {
                       })}
                       {lineFields.length > 0 && (
                         <TableRow sx={{ fontWeight: 600, bgcolor: "grey.100" }}>
-                          <TableCell colSpan={4}>Totals</TableCell>
+                          <TableCell colSpan={3}>Totals</TableCell>
                           <TableCell>
-                            {lineFields.reduce(
-                              (sum, _, idx) =>
-                                sum + (Number(watchLines[idx]?.qtyRolls) || 0),
-                              0
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {lineFields.reduce(
-                              (sum, _, idx) =>
-                                sum +
-                                (Number(
-                                  watchLines[idx]?.totalMeters ??
-                                    lineFields[idx]?.totalMeters
-                                ) ||
-                                  (Number(
-                                    watchLines[idx]?.lengthMetersPerRoll
-                                  ) || 0) *
-                                    (Number(watchLines[idx]?.qtyRolls) || 0)),
-                              0
-                            )}
+                            {lineFields.reduce((sum, _, idx) => {
+                              const line = watchLines[idx] || {};
+                              const fallback =
+                                Number(line.totalMeters ?? lineFields[idx]?.totalMeters) ||
+                                (Number(line.lengthMetersPerRoll) || 0) *
+                                (Number(line.qtyRolls) || 0);
+                              const rs = summarizeRollDetails(line.rollDetails || []);
+                              return sum + (Number(rs.totalMeters) || fallback || 0);
+                            }, 0)}
                           </TableCell>
                           <TableCell>
                             {formatCurrency(
                               lineFields.reduce((sum, _, idx) => {
+                                const line = watchLines[idx] || {};
+                                const rs = summarizeRollDetails(line.rollDetails || []);
+                                const fallbackMeters =
+                                  Number(line.totalMeters || lineFields[idx]?.totalMeters) ||
+                                  (Number(line.lengthMetersPerRoll) || 0) *
+                                  (Number(line.qtyRolls) || 0);
                                 const meters =
-                                  Number(
-                                    watchLines[idx]?.inwardMeters ||
-                                      watchLines[idx]?.totalMeters ||
-                                      lineFields[idx]?.totalMeters
-                                  ) ||
-                                  (Number(
-                                    watchLines[idx]?.lengthMetersPerRoll
-                                  ) || 0) *
-                                    (Number(watchLines[idx]?.qtyRolls) || 0);
-                                const rate =
-                                  Number(watchLines[idx]?.ratePerRoll) || 0;
+                                  Number(rs.totalMeters) ||
+                                  Number(line.inwardMeters) ||
+                                  fallbackMeters ||
+                                  0;
+                                const rate = Number(line.ratePerRoll) || 0;
                                 return sum + meters * rate;
                               }, 0)
                             )}
                           </TableCell>
                           <TableCell>
-                            {lineFields.reduce(
-                              (sum, _, idx) =>
-                                sum +
-                                deriveInwardRolls(
-                                  Number(watchLines[idx]?.inwardMeters) || 0,
-                                  Number(
-                                    watchLines[idx]?.lengthMetersPerRoll
-                                  ) || 0
-                                ),
-                              0
-                            )}
+                            {lineFields.reduce((sum, _, idx) => {
+                              const line = watchLines[idx] || {};
+                              const rs = summarizeRollDetails(line.rollDetails || []);
+                              const meterPerRoll = Number(line.lengthMetersPerRoll) || 0;
+                              const meters =
+                                Number(rs.totalMeters) || Number(line.inwardMeters) || 0;
+                              const rolls =
+                                Number(rs.totalRolls) ||
+                                deriveInwardRolls(meters, meterPerRoll);
+                              return sum + (Number(rolls) || 0);
+                            }, 0)}
                           </TableCell>
                           <TableCell>
-                            {lineFields.reduce(
-                              (sum, _, idx) =>
+                            {lineFields.reduce((sum, _, idx) => {
+                              const line = watchLines[idx] || {};
+                              const rs = summarizeRollDetails(line.rollDetails || []);
+                              return (
                                 sum +
-                                (Number(watchLines[idx]?.inwardMeters) || 0),
-                              0
-                            )}
+                                (Number(rs.totalMeters) ||
+                                  Number(line.inwardMeters) ||
+                                  0)
+                              );
+                            }, 0)}
                           </TableCell>
                           <TableCell />
                         </TableRow>
@@ -1889,8 +1989,6 @@ const PurchaseInvoices = () => {
                   <TableCell>PO Number</TableCell>
                   <TableCell>SKU</TableCell>
                   <TableCell>Base Rate</TableCell>
-                  <TableCell>Meter/Roll</TableCell>
-                  <TableCell>Roll Quantity</TableCell>
                   <TableCell>Total Meters</TableCell>
                   <TableCell>Total Amount</TableCell>
                   <TableCell>Total Inward Meters</TableCell>
@@ -1911,17 +2009,17 @@ const PurchaseInvoices = () => {
                   const selected = pendingLineIds.includes(line.poLineId);
                   const pending = pendingLineValues[line.poLineId] || {};
                   const meterPerRoll = Number(line.lengthMetersPerRoll) || 0;
-              const rollSummary = summarizeRollDetails(
-                pending.rollDetails || line.rollDetails || []
-              );
-              const effectiveMeters =
-                rollSummary.totalMeters ??
-                pending.inwardMeters ??
-                line.inwardMeters ??
-                0;
-              const derivedInwardRolls =
-                rollSummary.totalRolls ??
-                deriveInwardRolls(effectiveMeters, meterPerRoll);
+                  const rollSummary = summarizeRollDetails(
+                    pending.rollDetails || line.rollDetails || []
+                  );
+                  const effectiveMeters =
+                    rollSummary.totalMeters ??
+                    pending.inwardMeters ??
+                    line.inwardMeters ??
+                    0;
+                  const derivedInwardRolls =
+                    rollSummary.totalRolls ??
+                    deriveInwardRolls(effectiveMeters, meterPerRoll);
 
                   return (
                     <TableRow key={line.poLineId} hover>
@@ -1934,55 +2032,53 @@ const PurchaseInvoices = () => {
                       <TableCell>{line.poNumber}</TableCell>
                       <TableCell>{line.skuCode || ""}</TableCell>
                       <TableCell>{formatCurrency(line.ratePerRoll)}</TableCell>
-                      <TableCell>{line.lengthMetersPerRoll}</TableCell>
-                      <TableCell>{line.qtyRolls}</TableCell>
                       <TableCell>{line?.totalMeters}</TableCell>
                       <TableCell>{formatCurrency(totalAmount)}</TableCell>
                       <TableCell>
-                      <Box sx={{ display: "flex", flexDirection: "column" }}>
-                        <Box
-                          sx={{ display: "flex", alignItems: "center", gap: 1 }}
-                        >
-                          <TextField
-                            type="number"
-                            size="small"
-                            sx={{ width: 140 }}
-                            value={effectiveMeters}
-                            onChange={(e) =>
-                              setPendingMetersWithDerivedRolls(
-                                line.poLineId,
-                                Number(e.target.value) || 0,
-                                meterPerRoll
-                              )
-                            }
-                          />
-                          <Tooltip title="View derived roll quantity">
-                            <IconButton
-                              size="small"
-                              onClick={() =>
-                                openInwardDetail(line, effectiveMeters)
-                              }
-                            >
-                              <InfoIcon fontSize="small" color="action" />
-                            </IconButton>
-                          </Tooltip>
-                          <Button
-                            size="small"
-                            variant="outlined"
-                            onClick={() => openRollDetailsDialog(line)}
+                        <Box sx={{ display: "flex", flexDirection: "column" }}>
+                          <Box
+                            sx={{ display: "flex", alignItems: "center", gap: 1 }}
                           >
-                            Add Rolls
-                          </Button>
+                            <TextField
+                              type="number"
+                              size="small"
+                              sx={{ width: 140 }}
+                              value={effectiveMeters}
+                              onChange={(e) =>
+                                setPendingMetersWithDerivedRolls(
+                                  line.poLineId,
+                                  Number(e.target.value) || 0,
+                                  meterPerRoll
+                                )
+                              }
+                            />
+                            <Tooltip title="View derived roll quantity">
+                              <IconButton
+                                size="small"
+                                onClick={() =>
+                                  openInwardDetail(line, effectiveMeters)
+                                }
+                              >
+                                <InfoIcon fontSize="small" color="action" />
+                              </IconButton>
+                            </Tooltip>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={() => openRollDetailsDialog(line)}
+                            >
+                              Add Rolls
+                            </Button>
+                          </Box>
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ mt: 0.5 }}
+                          >
+                            Rolls: {rollSummary.totalRolls || 0} | Meters:{" "}
+                            {rollSummary.totalMeters || 0}
+                          </Typography>
                         </Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          sx={{ mt: 0.5 }}
-                        >
-                          Rolls: {rollSummary.totalRolls || 0} | Meters:{" "}
-                          {rollSummary.totalMeters || 0}
-                        </Typography>
-                      </Box>
                       </TableCell>
                     </TableRow>
                   );
@@ -2142,6 +2238,91 @@ const PurchaseInvoices = () => {
               );
             })()}
           >
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={piBifurcationDialog.open}
+        onClose={closePiBifurcationModal}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Roll Bifurcation</DialogTitle>
+        <DialogContent dividers>
+          {(piBifurcationDialog.rows || []).map((row, idx) => (
+            <Grid
+              container
+              spacing={1}
+              alignItems="center"
+              key={`pi-bif-${idx}`}
+              sx={{ mb: 1 }}
+            >
+              <Grid item xs={5}>
+                <TextField
+                  label="Roll Quantity"
+                  type="number"
+                  size="small"
+                  fullWidth
+                  value={row.rollQty}
+                  onChange={(e) =>
+                    updatePiBifurcationRow(idx, "rollQty", e.target.value)
+                  }
+                />
+              </Grid>
+              <Grid item xs={5}>
+                <TextField
+                  label="Meters / Roll"
+                  type="number"
+                  size="small"
+                  fullWidth
+                  value={row.metersPerRoll}
+                  onChange={(e) =>
+                    updatePiBifurcationRow(idx, "metersPerRoll", e.target.value)
+                  }
+                />
+              </Grid>
+              <Grid item xs={2}>
+                <IconButton
+                  size="small"
+                  onClick={() => removePiBifurcationRow(idx)}
+                  disabled={(piBifurcationDialog.rows || []).length <= 1}
+                >
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
+              </Grid>
+            </Grid>
+          ))}
+
+          <Button
+            startIcon={<AddIcon />}
+            size="small"
+            onClick={addPiBifurcationRow}
+            sx={{ mb: 1 }}
+          >
+            Add Row
+          </Button>
+
+          <Divider sx={{ my: 1.5 }} />
+
+          {(() => {
+            const summary = summarizeRollDetails(piBifurcationDialog.rows || []);
+            return (
+              <Box>
+                <Typography variant="body2" color="text.secondary">
+                  Total rolls: {summary.totalRolls}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Total meters: {Math.round(summary.totalMeters * 100) / 100}
+                </Typography>
+              </Box>
+            );
+          })()}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closePiBifurcationModal}>Cancel</Button>
+          <Button variant="contained" onClick={savePiBifurcation}>
             Save
           </Button>
         </DialogActions>

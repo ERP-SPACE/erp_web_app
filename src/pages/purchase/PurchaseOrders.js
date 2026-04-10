@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useRef, useState, useEffect } from "react";
 import {
   Autocomplete,
   Box,
@@ -35,6 +35,7 @@ import {
   Save as SaveIcon,
   Close as CloseIcon,
   Warning as WarningIcon,
+  AccountTree as BifurcateIcon,
 } from "@mui/icons-material";
 import { useForm, Controller, useFieldArray } from "react-hook-form";
 import { NumericFormat } from "react-number-format";
@@ -44,6 +45,7 @@ import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import purchaseService from "../../services/purchaseService";
 import masterService from "../../services/masterService";
+import pricingService from "../../services/pricingService";
 import {
   formatCurrency,
   formatDate,
@@ -65,6 +67,19 @@ const sanitizeNumber = (value) => {
   return Number(value) || 0;
 };
 
+const round2 = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100) / 100;
+};
+
+const calculateWidthRate2dp = (baseRate44, widthInches) => {
+  const base = sanitizeNumber(baseRate44);
+  const width = sanitizeNumber(widthInches);
+  if (!base || !width) return 0;
+  return round2(base * (width / 44));
+};
+
 const PurchaseOrders = () => {
   const { showNotification, setLoading } = useApp();
   const [orders, setOrders] = useState([]);
@@ -84,6 +99,13 @@ const PurchaseOrders = () => {
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
+  const autoSaveBaseRateTimersRef = useRef(new Map()); // key: supplierId|productId -> timeoutId
+  const lastAutoSavedBaseRateRef = useRef(new Map()); // key: supplierId|productId -> number
+  const [bifurcationDialog, setBifurcationDialog] = useState({
+    open: false,
+    lineIndex: null,
+    rows: [],
+  });
 
   const {
     control,
@@ -106,8 +128,12 @@ const PurchaseOrders = () => {
           widthInches: "",
           lengthMetersPerRoll: 0,
           qtyRolls: 0,
+          baseRate44: 0,
+          derivedRatePerRoll: 0,
+          overrideRatePerRoll: null,
           ratePerRoll: 0,
           totalMeters: 0,
+          bifurcations: [],
           lineTotal: 0,
           lineStatus: "Pending",
         },
@@ -212,17 +238,31 @@ const PurchaseOrders = () => {
     const productId =
       sku?.productId?._id || sku?.productId || sku?.product?._id || sku?.product || "";
     if (!productId) return;
-    const rate = Number(newRateValue);
-    if (!rate || rate <= 0) {
+    const baseRate44 = Number(newRateValue);
+    if (!baseRate44 || baseRate44 <= 0) {
       showNotification("Please enter a valid rate", "warning");
       return;
     }
     try {
-      await masterService.upsertSupplierBaseRate(supplierId, productId, rate);
+      await masterService.upsertSupplierBaseRate(supplierId, productId, baseRate44);
       showNotification("Supplier base rate saved successfully", "success");
       await fetchSupplierBaseRates(supplierId);
-      // Auto-fill the line with the newly saved rate
-      setValue(`lines.${lineIndex}.ratePerRoll`, rate);
+      // Apply baseRate44 to the line and derive rate by width
+      setValue(`lines.${lineIndex}.baseRate44`, baseRate44);
+      const widthInches = sanitizeNumber(getValues(`lines.${lineIndex}.widthInches`)) || sanitizeNumber(sku?.widthInches);
+      const derivedRate = calculateWidthRate2dp(baseRate44, widthInches);
+      setValue(`lines.${lineIndex}.derivedRatePerRoll`, derivedRate);
+
+      const override = getValues(`lines.${lineIndex}.overrideRatePerRoll`);
+      const hasOverride = override !== null && override !== undefined && override !== "";
+      const finalRate = hasOverride ? sanitizeNumber(override) : derivedRate;
+      setValue(`lines.${lineIndex}.ratePerRoll`, finalRate);
+
+      const qtyRolls = sanitizeNumber(getValues(`lines.${lineIndex}.qtyRolls`));
+      const metersPerRoll = sanitizeNumber(getValues(`lines.${lineIndex}.lengthMetersPerRoll`));
+      const totalMeters = qtyRolls * metersPerRoll;
+      setValue(`lines.${lineIndex}.totalMeters`, totalMeters);
+      setValue(`lines.${lineIndex}.lineTotal`, totalMeters * finalRate);
       setAddingRateForLine(null);
       setNewRateValue("");
     } catch (err) {
@@ -366,7 +406,19 @@ const PurchaseOrders = () => {
 
     if (baseRate === undefined) return;
 
-    setValue(`lines.${index}.ratePerRoll`, baseRate);
+    const widthInches =
+      sanitizeNumber(getValues(`lines.${index}.widthInches`)) ||
+      sanitizeNumber(sku.widthInches);
+    const derivedRate = calculateWidthRate2dp(baseRate, widthInches);
+
+    setValue(`lines.${index}.baseRate44`, baseRate);
+    setValue(`lines.${index}.derivedRatePerRoll`, derivedRate);
+
+    const override = getValues(`lines.${index}.overrideRatePerRoll`);
+    const hasOverride = override !== null && override !== undefined && override !== "";
+    const finalRate = hasOverride ? sanitizeNumber(override) : derivedRate;
+
+    setValue(`lines.${index}.ratePerRoll`, finalRate);
 
     const qtyRolls = sanitizeNumber(getValues(`lines.${index}.qtyRolls`));
     const metersPerRoll = sanitizeNumber(
@@ -374,7 +426,7 @@ const PurchaseOrders = () => {
     );
     const totalMeters = qtyRolls * metersPerRoll;
     setValue(`lines.${index}.totalMeters`, totalMeters);
-    setValue(`lines.${index}.lineTotal`, totalMeters * baseRate);
+    setValue(`lines.${index}.lineTotal`, totalMeters * finalRate);
   };
 
   useEffect(() => {
@@ -405,6 +457,9 @@ const PurchaseOrders = () => {
       setValue(`lines.${index}.qualityName`, "");
       setValue(`lines.${index}.widthInches`, "");
       setValue(`lines.${index}.lengthMetersPerRoll`, "");
+      setValue(`lines.${index}.baseRate44`, 0);
+      setValue(`lines.${index}.derivedRatePerRoll`, 0);
+      setValue(`lines.${index}.overrideRatePerRoll`, null);
       setValue(`lines.${index}.lineStatus`, "Pending");
       return;
     }
@@ -421,6 +476,187 @@ const PurchaseOrders = () => {
     );
 
     applyBaseRateForLine(index, sku, getValues("supplierId"));
+  };
+
+  const handleOverrideRateChange = (index, overrideRate) => {
+    const normalizedOverride =
+      overrideRate === null || overrideRate === undefined || overrideRate === ""
+        ? null
+        : sanitizeNumber(overrideRate);
+    setValue(`lines.${index}.overrideRatePerRoll`, normalizedOverride);
+
+    const derivedRate = sanitizeNumber(getValues(`lines.${index}.derivedRatePerRoll`));
+    const finalRate =
+      normalizedOverride !== null && normalizedOverride !== undefined
+        ? sanitizeNumber(normalizedOverride)
+        : derivedRate;
+    setValue(`lines.${index}.ratePerRoll`, finalRate);
+
+    const qtyRolls = sanitizeNumber(getValues(`lines.${index}.qtyRolls`));
+    const metersPerRoll = sanitizeNumber(getValues(`lines.${index}.lengthMetersPerRoll`));
+    const totalMeters = qtyRolls * metersPerRoll;
+    setValue(`lines.${index}.totalMeters`, totalMeters);
+    setValue(`lines.${index}.lineTotal`, totalMeters * finalRate);
+  };
+
+  const getLineProductId = (lineIndex) => {
+    const skuId = getValues(`lines.${lineIndex}.skuId`);
+    const normalizedSkuId =
+      skuId && typeof skuId === "object" ? skuId._id || skuId.id : skuId;
+    if (!normalizedSkuId) return "";
+    const sku = skus?.find((s) => s._id === normalizedSkuId) || null;
+    return (
+      sku?.productId?._id ||
+      sku?.productId ||
+      sku?.product?._id ||
+      sku?.product ||
+      ""
+    );
+  };
+
+  const queueAutoSaveSupplierBaseRate44 = async (lineIndex, baseRate44) => {
+    const supplierId = getValues("supplierId");
+    const productId = getLineProductId(lineIndex);
+    const base = sanitizeNumber(baseRate44);
+    if (!supplierId || !productId) return;
+    if (!base || base <= 0) return;
+
+    const key = `${supplierId}|${productId}`;
+    const last = lastAutoSavedBaseRateRef.current.get(key);
+    if (last === base) return;
+
+    const existingTimer = autoSaveBaseRateTimersRef.current.get(key);
+    if (existingTimer) clearTimeout(existingTimer);
+
+    const timeoutId = setTimeout(async () => {
+      try {
+        await masterService.upsertSupplierBaseRate(supplierId, productId, base);
+        lastAutoSavedBaseRateRef.current.set(key, base);
+        await fetchSupplierBaseRates(supplierId);
+      } catch (err) {
+        showNotification(err?.message || "Failed to auto-save base rate", "error");
+      }
+    }, 800);
+
+    autoSaveBaseRateTimersRef.current.set(key, timeoutId);
+  };
+
+  const handleBaseRate44Change = (index, baseRate44) => {
+    const normalizedBase = sanitizeNumber(baseRate44);
+    setValue(`lines.${index}.baseRate44`, normalizedBase);
+
+    const widthInches = sanitizeNumber(getValues(`lines.${index}.widthInches`));
+    const derivedRate = calculateWidthRate2dp(normalizedBase, widthInches);
+    setValue(`lines.${index}.derivedRatePerRoll`, derivedRate);
+
+    const override = getValues(`lines.${index}.overrideRatePerRoll`);
+    const hasOverride = override !== null && override !== undefined && override !== "";
+    const finalRate = hasOverride ? sanitizeNumber(override) : derivedRate;
+    setValue(`lines.${index}.ratePerRoll`, finalRate);
+
+    const totalMeters = sanitizeNumber(getValues(`lines.${index}.totalMeters`));
+    setValue(`lines.${index}.lineTotal`, totalMeters * finalRate);
+
+    // Auto-update supplier base rate (44") for this product
+    queueAutoSaveSupplierBaseRate44(index, normalizedBase);
+  };
+
+  const handleTotalMetersChange = (index, totalMetersValue) => {
+    const totalMeters = sanitizeNumber(totalMetersValue);
+    setValue(`lines.${index}.totalMeters`, totalMeters);
+    const rate = sanitizeNumber(getValues(`lines.${index}.ratePerRoll`));
+    setValue(`lines.${index}.lineTotal`, totalMeters * rate);
+  };
+
+  const openBifurcationModal = (index) => {
+    const existing = getValues(`lines.${index}.bifurcations`) || [];
+    const totalMeters = sanitizeNumber(getValues(`lines.${index}.totalMeters`));
+    const metersPerRoll = sanitizeNumber(getValues(`lines.${index}.lengthMetersPerRoll`));
+
+    const rows =
+      Array.isArray(existing) && existing.length
+        ? existing.map((r) => ({
+            rollQty: sanitizeNumber(r.rollQty),
+            metersPerRoll: sanitizeNumber(r.metersPerRoll),
+          }))
+        : (() => {
+            // Default real-world split:
+            // full rolls at default meters/roll + one partial roll for remainder.
+            if (!totalMeters || !metersPerRoll) {
+              return [{ rollQty: 0, metersPerRoll: metersPerRoll || 0 }];
+            }
+
+            const fullRolls = Math.floor(totalMeters / metersPerRoll);
+            const remainder = round2(totalMeters - fullRolls * metersPerRoll);
+
+            const seeded = [];
+            if (fullRolls > 0) {
+              seeded.push({ rollQty: fullRolls, metersPerRoll });
+            }
+            if (remainder > 0) {
+              seeded.push({ rollQty: 1, metersPerRoll: remainder });
+            }
+
+            return seeded.length ? seeded : [{ rollQty: 0, metersPerRoll }];
+          })();
+
+    setBifurcationDialog({ open: true, lineIndex: index, rows });
+  };
+
+  const closeBifurcationModal = () => {
+    setBifurcationDialog({ open: false, lineIndex: null, rows: [] });
+  };
+
+  const updateBifurcationRow = (rowIndex, key, value) => {
+    setBifurcationDialog((prev) => {
+      const nextRows = [...(prev.rows || [])];
+      nextRows[rowIndex] = { ...(nextRows[rowIndex] || {}), [key]: value };
+      return { ...prev, rows: nextRows };
+    });
+  };
+
+  const addBifurcationRow = () => {
+    setBifurcationDialog((prev) => ({
+      ...prev,
+      rows: [...(prev.rows || []), { rollQty: 0, metersPerRoll: 0 }],
+    }));
+  };
+
+  const removeBifurcationRow = (rowIndex) => {
+    setBifurcationDialog((prev) => {
+      const next = [...(prev.rows || [])];
+      next.splice(rowIndex, 1);
+      return { ...prev, rows: next.length ? next : [{ rollQty: 0, metersPerRoll: 0 }] };
+    });
+  };
+
+  const saveBifurcation = () => {
+    const idx = bifurcationDialog.lineIndex;
+    if (idx === null || idx === undefined) {
+      closeBifurcationModal();
+      return;
+    }
+
+    const rows = (bifurcationDialog.rows || []).map((r) => ({
+      rollQty: sanitizeNumber(r.rollQty),
+      metersPerRoll: sanitizeNumber(r.metersPerRoll),
+    }));
+
+    const totalRolls = rows.reduce((s, r) => s + sanitizeNumber(r.rollQty), 0);
+    const totalMeters = rows.reduce(
+      (s, r) => s + sanitizeNumber(r.rollQty) * sanitizeNumber(r.metersPerRoll),
+      0
+    );
+
+    setValue(`lines.${idx}.bifurcations`, rows);
+    setValue(`lines.${idx}.qtyRolls`, totalRolls);
+    setValue(
+      `lines.${idx}.lengthMetersPerRoll`,
+      totalRolls > 0 ? totalMeters / totalRolls : sanitizeNumber(getValues(`lines.${idx}.lengthMetersPerRoll`))
+    );
+    handleTotalMetersChange(idx, totalMeters);
+
+    closeBifurcationModal();
   };
 
   const handleApprove = (row) => {
@@ -487,6 +723,14 @@ const PurchaseOrders = () => {
         return {
           ...restLine,
           qtyRolls,
+          baseRate44: sanitizeNumber(line.baseRate44),
+          derivedRatePerRoll: sanitizeNumber(line.derivedRatePerRoll),
+          overrideRatePerRoll:
+            line.overrideRatePerRoll === null ||
+            line.overrideRatePerRoll === undefined ||
+            line.overrideRatePerRoll === ""
+              ? null
+              : sanitizeNumber(line.overrideRatePerRoll),
           ratePerRoll,
           lengthMetersPerRoll,
           totalMeters,
@@ -724,10 +968,6 @@ const PurchaseOrders = () => {
             <Typography variant="h6" gutterBottom>
               Order Lines
             </Typography>
-            <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-              Leave SKU empty to enter a manual line (category, GSM, quality, width, rate, and quantities).
-              Select a SKU to pull details from master data.
-            </Typography>
 
             <TableContainer component={Paper}>
               <Table size="small">
@@ -739,9 +979,8 @@ const PurchaseOrders = () => {
                     <TableCell>Quality</TableCell>
                     <TableCell>Width</TableCell>
                     <TableCell>Base Rate</TableCell>
-                    <TableCell>Meters/Roll</TableCell>
-                    <TableCell>Roll Quantity</TableCell>
                     <TableCell>Total Meters</TableCell>
+                    <TableCell>Rate</TableCell>
                     <TableCell>Total Amount</TableCell>
                     <TableCell>Status</TableCell>
                     <TableCell></TableCell>
@@ -767,154 +1006,129 @@ const PurchaseOrders = () => {
                     const supplierRate =
                       hasSkuSelected && lineProductId
                         ? supplierBaseRates.find((br) => {
-                            const brId =
-                              br.productId?._id?.toString() ||
-                              br.productId?.toString() ||
-                              "";
-                            return brId === lineProductId.toString();
-                          })
+                          const brId =
+                            br.productId?._id?.toString() ||
+                            br.productId?.toString() ||
+                            "";
+                          return brId === lineProductId.toString();
+                        })
                         : null;
                     const hasSupplierRate = !!supplierRate;
+                    const supplierBaseRate44 = hasSupplierRate
+                      ? sanitizeNumber(supplierRate.rate)
+                      : 0;
+                    const widthInches = sanitizeNumber(
+                      watchLines?.[index]?.widthInches
+                    );
+                    // Always derive from the LINE's current baseRate44 so the Rate updates immediately
+                    // when the user edits baseRate44 (without waiting for supplier base-rate refresh).
+                    const lineBaseRate44 = sanitizeNumber(watchLines?.[index]?.baseRate44) || supplierBaseRate44;
+                    const derivedRate = lineBaseRate44 && widthInches
+                      ? calculateWidthRate2dp(lineBaseRate44, widthInches)
+                      : sanitizeNumber(watchLines?.[index]?.derivedRatePerRoll);
+                    const overrideRate = watchLines?.[index]?.overrideRatePerRoll;
+                    const hasOverrideRate =
+                      overrideRate !== null &&
+                      overrideRate !== undefined &&
+                      overrideRate !== "";
+                    const finalRate = hasOverrideRate
+                      ? sanitizeNumber(overrideRate)
+                      : derivedRate;
 
                     return (
-                    <TableRow key={field.id}>
-                      <TableCell sx={{ minWidth: 300 }}>
-                        <Controller
-                          name={`lines.${index}.skuId`}
-                          control={control}
-                          render={({ field }) => (
-                            <Autocomplete
-                              {...buildSingleSelectAutocompleteProps(
-                                skuOptions,
-                                field.value,
-                                (value) => {
-                                  setAddingRateForLine(null);
-                                  setNewRateValue("");
-                                  handleSKUChange(index, value);
-                                }
-                              )}
-                              size="small"
-                              fullWidth
-                              renderInput={(params) => <TextField {...params} />}
-                            />
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Controller
-                          name={`lines.${index}.categoryName`}
-                          control={control}
-                          render={({ field }) => (
-                            <TextField
-                              {...field}
-                              size="small"
-                              disabled={hasSkuSelected}
-                              placeholder={isManualLine ? "e.g. Sublimation" : ""}
-                              title={
-                                isManualLine
-                                  ? "Manual line: type category, or pick a SKU above to use master data."
-                                  : "From SKU master"
-                              }
-                            />
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Controller
-                          name={`lines.${index}.gsm`}
-                          control={control}
-                          render={({ field }) => (
-                            <TextField
-                              {...field}
-                              size="small"
-                              disabled={hasSkuSelected}
-                              placeholder={isManualLine ? "GSM" : ""}
-                              title={isManualLine ? "Manual GSM" : "From SKU master"}
-                            />
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Controller
-                          name={`lines.${index}.qualityName`}
-                          control={control}
-                          render={({ field }) => (
-                            <TextField
-                              {...field}
-                              size="small"
-                              disabled={hasSkuSelected}
-                              placeholder={isManualLine ? "Quality" : ""}
-                              title={isManualLine ? "Manual quality" : "From SKU master"}
-                            />
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Controller
-                          name={`lines.${index}.widthInches`}
-                          control={control}
-                          render={({ field }) => (
-                            <TextField
-                              {...field}
-                              type="number"
-                              size="small"
-                              disabled={hasSkuSelected}
-                              placeholder={isManualLine ? "Width" : ""}
-                              title={isManualLine ? "Manual width (inches)" : "From SKU master"}
-                              inputProps={{ min: 0, step: "any" }}
-                            />
-                          )}
-                        />
-                      </TableCell>
-
-                      {/* Base Rate: editable for manual lines; for SKU lines, optional supplier base-rate save flow */}
-                      <TableCell sx={{ minWidth: 160 }}>
-                        {isManualLine ? (
+                      <TableRow key={field.id}>
+                        <TableCell sx={{ minWidth: 300 }}>
                           <Controller
-                            name={`lines.${index}.ratePerRoll`}
+                            name={`lines.${index}.skuId`}
                             control={control}
                             render={({ field }) => (
-                              <NumericFormat
-                                {...field}
-                                customInput={TextField}
+                              <Autocomplete
+                                {...buildSingleSelectAutocompleteProps(
+                                  skuOptions,
+                                  field.value,
+                                  (value) => {
+                                    setAddingRateForLine(null);
+                                    setNewRateValue("");
+                                    handleSKUChange(index, value);
+                                  }
+                                )}
                                 size="small"
-                                thousandSeparator=","
-                                decimalScale={2}
-                                sx={{ width: 110 }}
-                                placeholder="Rate"
-                                title="Rate per roll for this manual line"
+                                fullWidth
+                                renderInput={(params) => <TextField {...params} />}
                               />
                             )}
                           />
-                        ) : addingRateForLine === index ? (
-                          <Stack direction="row" spacing={0.5} alignItems="center">
-                            <TextField
-                              size="small"
-                              type="number"
-                              value={newRateValue}
-                              onChange={(e) => setNewRateValue(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter") handleSaveSkuRate(index);
-                                if (e.key === "Escape") { setAddingRateForLine(null); setNewRateValue(""); }
-                              }}
-                              autoFocus
-                              placeholder="Rate"
-                              sx={{ width: 90 }}
-                              inputProps={{ min: 0, step: "any" }}
-                            />
-                            <Tooltip title="Save as supplier base rate">
-                              <IconButton size="small" color="primary" onClick={() => handleSaveSkuRate(index)}>
-                                <SaveIcon fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                            <Tooltip title="Cancel">
-                              <IconButton size="small" onClick={() => { setAddingRateForLine(null); setNewRateValue(""); }}>
-                                <CloseIcon fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                          </Stack>
-                        ) : (
-                          <Stack direction="row" spacing={0.5} alignItems="center">
+                        </TableCell>
+                        <TableCell>
+                          <Controller
+                            name={`lines.${index}.categoryName`}
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                size="small"
+                                disabled={hasSkuSelected}
+                                placeholder={isManualLine ? "e.g. Sublimation" : ""}
+                                title={
+                                  isManualLine
+                                    ? "Manual line: type category, or pick a SKU above to use master data."
+                                    : "From SKU master"
+                                }
+                              />
+                            )}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Controller
+                            name={`lines.${index}.gsm`}
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                size="small"
+                                disabled={hasSkuSelected}
+                                placeholder={isManualLine ? "GSM" : ""}
+                                title={isManualLine ? "Manual GSM" : "From SKU master"}
+                              />
+                            )}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Controller
+                            name={`lines.${index}.qualityName`}
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                size="small"
+                                disabled={hasSkuSelected}
+                                placeholder={isManualLine ? "Quality" : ""}
+                                title={isManualLine ? "Manual quality" : "From SKU master"}
+                              />
+                            )}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Controller
+                            name={`lines.${index}.widthInches`}
+                            control={control}
+                            render={({ field }) => (
+                              <TextField
+                                {...field}
+                                type="number"
+                                size="small"
+                                disabled={hasSkuSelected}
+                                placeholder={isManualLine ? "Width" : ""}
+                                title={isManualLine ? "Manual width (inches)" : "From SKU master"}
+                                inputProps={{ min: 0, step: "any" }}
+                              />
+                            )}
+                          />
+                        </TableCell>
+
+                        {/* Base Rate (44"): editable for manual lines; for SKU lines, supplier base-rate save flow */}
+                        <TableCell sx={{ minWidth: 160 }}>
+                          {isManualLine ? (
                             <Controller
                               name={`lines.${index}.ratePerRoll`}
                               control={control}
@@ -926,97 +1140,201 @@ const PurchaseOrders = () => {
                                   thousandSeparator=","
                                   decimalScale={2}
                                   sx={{ width: 110 }}
+                                  placeholder="Rate"
+                                  title="Rate per roll for this manual line"
                                 />
                               )}
                             />
-                            {!hasSupplierRate && (
-                              <Tooltip title="No supplier base rate — click to save current rate as base rate">
-                                <IconButton
-                                  size="small"
-                                  color="warning"
-                                  onClick={() => {
-                                    const currentRate = getValues(`lines.${index}.ratePerRoll`);
-                                    setNewRateValue(String(sanitizeNumber(currentRate) || ""));
-                                    setAddingRateForLine(index);
-                                  }}
-                                >
-                                  <WarningIcon sx={{ fontSize: 14 }} />
+                          ) : addingRateForLine === index ? (
+                            <Stack direction="row" spacing={0.5} alignItems="center">
+                              <TextField
+                                size="small"
+                                type="number"
+                                value={newRateValue}
+                                onChange={(e) => setNewRateValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") handleSaveSkuRate(index);
+                                  if (e.key === "Escape") { setAddingRateForLine(null); setNewRateValue(""); }
+                                }}
+                                autoFocus
+                                placeholder='Base rate (44")'
+                                sx={{ width: 90 }}
+                                inputProps={{ min: 0, step: "any" }}
+                              />
+                              <Tooltip title="Save as supplier base rate">
+                                <IconButton size="small" color="primary" onClick={() => handleSaveSkuRate(index)}>
+                                  <SaveIcon fontSize="small" />
                                 </IconButton>
                               </Tooltip>
-                            )}
+                              <Tooltip title="Cancel">
+                                <IconButton size="small" onClick={() => { setAddingRateForLine(null); setNewRateValue(""); }}>
+                                  <CloseIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            </Stack>
+                          ) : (
+                            <Stack direction="row" spacing={0.5} alignItems="center">
+                              <Controller
+                                name={`lines.${index}.baseRate44`}
+                                control={control}
+                                render={({ field }) => (
+                                  <NumericFormat
+                                    {...field}
+                                    customInput={TextField}
+                                    size="small"
+                                    thousandSeparator=","
+                                    decimalScale={2}
+                                    sx={{ width: 110 }}
+                                    placeholder='Base (44")'
+                                    disabled={!supplierSelected}
+                                    onValueChange={(values) =>
+                                      handleBaseRate44Change(
+                                        index,
+                                        values.floatValue
+                                      )
+                                    }
+                                  />
+                                )}
+                              />
+                              {!hasSupplierRate && (
+                                <Tooltip title='No supplier base rate — click to save 44" base rate'>
+                                  <IconButton
+                                    size="small"
+                                    color="warning"
+                                    onClick={() => {
+                                      // Seed base44 by reversing derived rate (if present): base44 ≈ rate * (44/width)
+                                      const currentRate = sanitizeNumber(
+                                        getValues(`lines.${index}.ratePerRoll`)
+                                      );
+                                      const width = sanitizeNumber(
+                                        getValues(`lines.${index}.widthInches`)
+                                      );
+                                      const seedBase44 =
+                                        currentRate && width
+                                          ? Math.round(currentRate * (44 / width))
+                                          : "";
+                                      setNewRateValue(String(seedBase44 || ""));
+                                      setAddingRateForLine(index);
+                                    }}
+                                  >
+                                    <WarningIcon sx={{ fontSize: 14 }} />
+                                  </IconButton>
+                                </Tooltip>
+                              )}
+                            </Stack>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Stack direction="row" spacing={0.5} alignItems="center">
+                            <Controller
+                              name={`lines.${index}.totalMeters`}
+                              control={control}
+                              render={({ field }) => (
+                                <NumericFormat
+                                  {...field}
+                                  customInput={TextField}
+                                  size="small"
+                                  thousandSeparator=","
+                                  decimalScale={2}
+                                  sx={{ width: 120 }}
+                                  placeholder="Meters"
+                                  onValueChange={(values) =>
+                                    handleTotalMetersChange(index, values.floatValue)
+                                  }
+                                />
+                              )}
+                            />
+                            <Tooltip title="Bifurcation (rolls × meters/roll)">
+                              <span>
+                                <IconButton
+                                  size="small"
+                                  onClick={() => openBifurcationModal(index)}
+                                  disabled={!sanitizeNumber(watchLines?.[index]?.totalMeters)}
+                                >
+                                  <BifurcateIcon fontSize="small" />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
                           </Stack>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Controller
-                          name={`lines.${index}.lengthMetersPerRoll`}
-                          control={control}
-                          render={({ field }) => (
-                            <TextField {...field} type="number" size="small" />
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Controller
-                          name={`lines.${index}.qtyRolls`}
-                          control={control}
-                          render={({ field }) => (
-                            <TextField {...field} type="number" size="small" />
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          value={
-                            sanitizeNumber(watchLines?.[index]?.qtyRolls) *
-                            sanitizeNumber(
-                              watchLines?.[index]?.lengthMetersPerRoll
-                            )
-                          }
-                          size="small"
-                          disabled
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Typography variant="body2">
-                          {formatCurrency(
-                            sanitizeNumber(watchLines?.[index]?.qtyRolls) *
+                        </TableCell>
+                        <TableCell>
+                          <Controller
+                            name={`lines.${index}.overrideRatePerRoll`}
+                            control={control}
+                            render={({ field }) => {
+                              const currentOverride = field.value;
+                              const hasOverride =
+                                currentOverride !== null &&
+                                currentOverride !== undefined &&
+                                currentOverride !== "";
+                              const displayRate = hasOverride
+                                ? sanitizeNumber(currentOverride)
+                                : sanitizeNumber(derivedRate);
+
+                              return (
+                                <NumericFormat
+                                  value={displayRate || ""}
+                                  customInput={TextField}
+                                  size="small"
+                                  thousandSeparator=","
+                                  decimalScale={2}
+                                  sx={{ width: 140 }}
+                                  placeholder="Rate"
+                                  title="Default is derived by width; edit to override for this PO"
+                                  onValueChange={(values) => {
+                                    // When user edits, treat it as an override for this PO line.
+                                    // Clearing the input removes the override and falls back to derived.
+                                    const nextOverride =
+                                      values.value === "" ? null : values.floatValue;
+                                    field.onChange(nextOverride);
+                                    handleOverrideRateChange(index, nextOverride);
+                                  }}
+                                />
+                              );
+                            }}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Typography variant="body2">
+                            {formatCurrency(
+                              sanitizeNumber(watchLines?.[index]?.qtyRolls) *
                               sanitizeNumber(
                                 watchLines?.[index]?.lengthMetersPerRoll
                               ) *
                               sanitizeNumber(watchLines?.[index]?.ratePerRoll)
+                            )}
+                          </Typography>
+                        </TableCell>
+                        <TableCell>
+                          <Controller
+                            name={`lines.${index}.lineStatus`}
+                            control={control}
+                            render={({ field }) => (
+                              <Typography variant="body2">
+                                {field.value || "Pending"}
+                              </Typography>
+                            )}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {fields.length > 1 && (
+                            <IconButton
+                              size="small"
+                              onClick={() => remove(index)}
+                            >
+                              <DeleteIcon fontSize="small" />
+                            </IconButton>
                           )}
-                        </Typography>
-                      </TableCell>
-                      <TableCell>
-                        <Controller
-                          name={`lines.${index}.lineStatus`}
-                          control={control}
-                          render={({ field }) => (
-                            <Typography variant="body2">
-                              {field.value || "Pending"}
-                            </Typography>
-                          )}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        {fields.length > 1 && (
-                          <IconButton
-                            size="small"
-                            onClick={() => remove(index)}
-                          >
-                            <DeleteIcon fontSize="small" />
-                          </IconButton>
-                        )}
-                      </TableCell>
-                    </TableRow>
+                        </TableCell>
+                      </TableRow>
                     );
                   })}
                   <TableRow sx={{ fontWeight: 600, bgcolor: "grey.100" }}>
-                    <TableCell colSpan={8}>Totals</TableCell>
+                    <TableCell colSpan={6}>Totals</TableCell>
                     <TableCell>
                       {formatNumber(lineTotals.totalMeters)}
                     </TableCell>
+                    <TableCell />
                     <TableCell>
                       {formatCurrency(lineTotals.totalAmount)}
                     </TableCell>
@@ -1038,8 +1356,12 @@ const PurchaseOrders = () => {
                   widthInches: "",
                   lengthMetersPerRoll: 0,
                   qtyRolls: 0,
+                  baseRate44: 0,
+                  derivedRatePerRoll: 0,
+                  overrideRatePerRoll: null,
                   ratePerRoll: 0,
                   totalMeters: 0,
+                  bifurcations: [],
                   lineTotal: 0,
                   lineStatus: "Pending",
                 })
@@ -1099,6 +1421,95 @@ const PurchaseOrders = () => {
         title="Confirm Action"
         message={confirmAction?.message}
       />
+
+      <Dialog
+        open={bifurcationDialog.open}
+        onClose={closeBifurcationModal}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Bifurcation</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+            Split total meters into roll groups (roll qty × meters/roll).
+          </Typography>
+
+          {(bifurcationDialog.rows || []).map((row, idx) => (
+            <Grid
+              container
+              spacing={1}
+              alignItems="center"
+              key={`bif-${idx}`}
+              sx={{ mb: 1 }}
+            >
+              <Grid item xs={5}>
+                <TextField
+                  label="Roll Qty"
+                  type="number"
+                  size="small"
+                  fullWidth
+                  value={row.rollQty}
+                  onChange={(e) =>
+                    updateBifurcationRow(idx, "rollQty", e.target.value)
+                  }
+                />
+              </Grid>
+              <Grid item xs={5}>
+                <TextField
+                  label="Meters / Roll"
+                  type="number"
+                  size="small"
+                  fullWidth
+                  value={row.metersPerRoll}
+                  onChange={(e) =>
+                    updateBifurcationRow(idx, "metersPerRoll", e.target.value)
+                  }
+                />
+              </Grid>
+              <Grid item xs={2}>
+                <IconButton size="small" onClick={() => removeBifurcationRow(idx)}>
+                  <DeleteIcon fontSize="small" />
+                </IconButton>
+              </Grid>
+            </Grid>
+          ))}
+
+          <Button startIcon={<AddIcon />} size="small" onClick={addBifurcationRow}>
+            Add Row
+          </Button>
+
+          <Divider sx={{ my: 1.5 }} />
+
+          {(() => {
+            const rows = bifurcationDialog.rows || [];
+            const totalRolls = rows.reduce(
+              (s, r) => s + sanitizeNumber(r.rollQty),
+              0
+            );
+            const totalMeters = rows.reduce(
+              (s, r) =>
+                s + sanitizeNumber(r.rollQty) * sanitizeNumber(r.metersPerRoll),
+              0
+            );
+            return (
+              <Box>
+                <Typography variant="body2">
+                  Total rolls: {formatNumber(totalRolls)}
+                </Typography>
+                <Typography variant="body2">
+                  Total meters: {formatNumber(totalMeters)}
+                </Typography>
+              </Box>
+            );
+          })()}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeBifurcationModal}>Cancel</Button>
+          <Button variant="contained" onClick={saveBifurcation}>
+            Save
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

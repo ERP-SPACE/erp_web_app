@@ -158,9 +158,10 @@ const StockSummary = () => {
 
   const summaryCards = [
     {
-      title: "Total Rolls",
-      value: formatNumber(summary.totalRolls),
-      icon: <InventoryIcon sx={{ fontSize: 40, color: "primary.main" }} />,
+      title: "SKU Varieties",
+      // Use distinct SKU count from API if available; fall back to row count
+      value: formatNumber(summary.distinctSKUs || summary.totalCategories || stockData.length),
+      icon: <CategoryIcon sx={{ fontSize: 40, color: "warning.main" }} />,
     },
     {
       title: "Total Meters",
@@ -173,10 +174,9 @@ const StockSummary = () => {
       icon: <TrendingUpIcon sx={{ fontSize: 40, color: "success.main" }} />,
     },
     {
-      title: "SKU Varieties",
-      // Use distinct SKU count from API if available; fall back to row count
-      value: formatNumber(summary.distinctSKUs || summary.totalCategories || stockData.length),
-      icon: <CategoryIcon sx={{ fontSize: 40, color: "warning.main" }} />,
+      title: "Total Rolls",
+      value: formatNumber(summary.totalRolls),
+      icon: <InventoryIcon sx={{ fontSize: 40, color: "primary.main" }} />,
     },
   ];
 

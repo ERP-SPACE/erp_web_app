@@ -72,21 +72,21 @@ const purchaseService = {
     return await api.post("/batches", data);
   },
 
-  // GRNs (Goods Received Notes)
-  getGRNs: async (params = {}) => {
-    return await api.get("/grns", { params });
+  // Purchase Returns
+  getPurchaseReturns: async (params = {}) => {
+    return await api.get("/purchase-returns", { params });
   },
 
-  getGRN: async (id) => {
-    return await api.get(`/grns/${id}`);
+  getPurchaseReturn: async (id) => {
+    return await api.get(`/purchase-returns/${id}`);
   },
 
-  createGRN: async (data) => {
-    return await api.post("/grns", data);
+  createPurchaseReturn: async (data) => {
+    return await api.post("/purchase-returns", data);
   },
 
-  postGRN: async (id) => {
-    return await api.post(`/grns/${id}/post`);
+  postPurchaseReturn: async (id) => {
+    return await api.post(`/purchase-returns/${id}/post`);
   },
 };
 
