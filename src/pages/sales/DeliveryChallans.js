@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import {
   Box,
   Button,
+  Checkbox,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -19,7 +20,6 @@ import {
   Chip,
   Alert,
   Autocomplete,
-  MenuItem,
 } from "@mui/material";
 import { DatePicker } from "@mui/x-date-pickers";
 import {
@@ -44,7 +44,7 @@ const DeliveryChallans = () => {
   const { showNotification, setLoading } = useApp();
   const [challans, setChallans] = useState([]);
   const [salesOrders, setSalesOrders] = useState([]);
-  const [availableRolls, setAvailableRolls] = useState([]);
+  const [availableRollsBySku, setAvailableRollsBySku] = useState({});
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedChallan, setSelectedChallan] = useState(null);
   const [selectedSO, setSelectedSO] = useState(null);
@@ -78,6 +78,21 @@ const DeliveryChallans = () => {
   });
 
   const watchSalesOrderId = watch("salesOrderId");
+
+  const normalizeId = (val) => {
+    if (!val) return "";
+    if (typeof val === "object") {
+      if (val._id) return String(val._id);
+      if (val.id) return String(val.id);
+      if (val.value) return String(val.value); // common select option shape
+      if (val.key) return String(val.key);
+      if (typeof val.toString === "function" && val.toString !== Object.prototype.toString) {
+        return String(val.toString());
+      }
+      return "";
+    }
+    return String(val);
+  };
 
   const deriveLineMeta = (line = {}) => {
     const skuObj =
@@ -172,7 +187,6 @@ const DeliveryChallans = () => {
       line && typeof line.skuId === "object" && !Array.isArray(line.skuId)
         ? line.skuId
         : null;
-        console.log("skuObj", skuObj);
     return (
       line?.skuCode ||
       skuObj?.skuCode ||
@@ -209,13 +223,56 @@ const DeliveryChallans = () => {
   const fetchSalesOrders = async () => {
     try {
       const response = await salesService.getSalesOrders({
-        status: ["Confirmed", "PartiallyFulfilled"],
+        // Eligible for DC creation: posted/confirmed or partially fulfilled
+        status: ["Posted", "Confirmed", "PartiallyFulfilled"],
       });
-      setSalesOrders(response.data);
+      const rows = response.data || [];
+      // Exclude SOs with no pending balance
+      const eligible = rows.filter((so) => {
+        const lines = so?.lines || [];
+        if (!lines.length) return false;
+        return lines.some((l) => (Number(l.qtyRolls) || 0) - (Number(l.dispatchedQty) || 0) > 0);
+      });
+      setSalesOrders(eligible);
     } catch (error) {
       console.error("Failed to fetch sales orders:", error);
     }
   };
+
+  const fetchAvailableRollsForSku = async (skuId) => {
+    const key = normalizeId(skuId);
+    if (!key) return [];
+    if (availableRollsBySku[key]) return availableRollsBySku[key];
+
+    const rollsResponse = await inventoryService.getRolls({
+      skuId: key,
+      status: "Mapped,Allocated",
+    });
+
+    const rolls = Array.isArray(rollsResponse?.rolls) ? rollsResponse.rolls : [];
+    setAvailableRollsBySku((prev) => ({ ...(prev || {}), [key]: rolls }));
+    return rolls;
+  };
+
+  const remainingBySoLine = useMemo(() => {
+    const map = {};
+    (selectedSO?.lines || []).forEach((l) => {
+      const qty = Number(l.qtyRolls) || 0;
+      const dispatched = Number(l.dispatchedQty) || 0;
+      map[normalizeId(l._id || l.id)] = Math.max(0, qty - dispatched);
+    });
+    return map;
+  }, [selectedSO]);
+
+  const selectedCountBySoLine = useMemo(() => {
+    const map = {};
+    (fields || []).forEach((l) => {
+      if (!l.selected) return;
+      const key = normalizeId(l.soLineId);
+      map[key] = (map[key] || 0) + 1;
+    });
+    return map;
+  }, [fields]);
 
   const loadSalesOrderDetails = async (soId, { populateDcLines = true } = {}) => {
     try {
@@ -233,56 +290,45 @@ const DeliveryChallans = () => {
       setSelectedSO(so);
 
       if (populateDcLines) {
-        // Fetch available rolls for each SO line
+        const skuIds = [
+          ...new Set(
+            (so.lines || [])
+              .map((l) => normalizeId(l.skuId))
+              .filter((id) => Boolean(id))
+          ),
+        ];
+        const loaded = await Promise.all(skuIds.map((id) => fetchAvailableRollsForSku(id)));
+        // loaded is an array of roll arrays, but we rely on availableRollsBySku for rendering elsewhere
+
         const dcLines = [];
-        for (const line of so.lines) {
-          const rollsResponse = await inventoryService.getRolls({
-            skuId: line.skuId,
-            status: "Mapped",
-          });
-
-          const rollsData =
-            rollsResponse?.data ||
-            rollsResponse?.rolls ||
-            rollsResponse?.rows ||
-            rollsResponse ||
-            [];
-          const rollsArray = Array.isArray(rollsData)
-            ? rollsData
-            : Array.isArray(rollsData?.rows)
-            ? rollsData.rows
-            : Array.isArray(rollsData?.data)
-            ? rollsData.data
-            : Array.isArray(rollsData?.rolls)
-            ? rollsData.rolls
-            : [];
-
-          const availableRolls = rollsArray.slice(
-            0,
-            (line.qtyRolls || 0) - (line.dispatchedQty || 0)
-          );
-
+        for (const line of so.lines || []) {
           const meta = deriveLineMeta(line);
+          const skuKey = normalizeId(line.skuId);
+          const rolls =
+            availableRollsBySku[skuKey] ||
+            loaded[skuIds.indexOf(skuKey)] ||
+            [];
 
-          availableRolls.forEach((roll) => {
+          (rolls || []).forEach((roll) => {
             dcLines.push({
               soLineId: line._id || line.id,
               rollId: roll._id || roll.id,
               rollNumber: roll.rollNumber,
-              skuId: line.skuId,
+              skuId: skuKey,
               skuCode: resolveSkuCode(line),
               categoryName: meta.categoryName,
               gsm: meta.gsm,
               qualityName: meta.qualityName,
-              widthInches: meta.widthInches,
-              shippedLengthMeters: roll.lengthMeters,
+              widthInches: roll.widthInches ?? meta.widthInches,
+              shippedLengthMeters:
+                roll.currentLengthMeters ?? roll.lengthMeters ?? "",
               shippedStatus: "Packed",
+              selected: false,
             });
           });
         }
 
         replace(dcLines);
-        setAvailableRolls(dcLines);
       }
     } catch (error) {
       console.error("Failed to load sales order details", error);
@@ -345,33 +391,69 @@ const DeliveryChallans = () => {
     }
   };
 
+  const handlePostChallan = async (row) => {
+    try {
+      await salesService.postDeliveryChallan(row._id);
+      showNotification("Delivery challan posted (dispatched) successfully", "success");
+      fetchDeliveryChallans();
+      fetchSalesOrders();
+    } catch (error) {
+      showNotification(error.message || "Failed to post delivery challan", "error");
+    }
+  };
+
   const onSubmit = async (data) => {
     try {
       if (!selectedSO) {
         showNotification("Select a sales order before saving", "warning");
         return;
       }
-      const dcData = {
-        ...data,
-        customerId: selectedSO.customerId,
-        customerName: selectedSO.customerName,
-        soNumber: selectedSO.soNumber,
-      };
 
       if (selectedChallan) {
-        await salesService.updateDeliveryChallan(selectedChallan._id, dcData);
+        await salesService.updateDeliveryChallan(selectedChallan._id, {
+          dcDate: data.dcDate,
+          vehicleNumber: data.vehicleNumber,
+          driverName: data.driverName,
+          driverPhone: data.driverPhone,
+          notes: data.notes,
+        });
         showNotification("Delivery challan updated successfully", "success");
       } else {
-        await salesService.createDeliveryChallan(dcData);
-
-        // Update roll status to Dispatched
-        for (const line of data.lines) {
-          await inventoryService.updateRoll(line.rollId, {
-            status: "Dispatched",
-            dispatchedInDCId: selectedChallan?._id,
-            dispatchedAt: new Date(),
-          });
+        const selectedLines = (data.lines || []).filter((l) => l.selected);
+        if (!selectedLines.length) {
+          showNotification("Please select at least one roll to dispatch", "error");
+          return;
         }
+
+        const selectedCount = {};
+        selectedLines.forEach((l) => {
+          const key = normalizeId(l.soLineId);
+          selectedCount[key] = (selectedCount[key] || 0) + 1;
+        });
+        const overSelected = Object.entries(selectedCount).find(
+          ([soLineId, count]) => count > (remainingBySoLine[soLineId] ?? 0)
+        );
+        if (overSelected) {
+          showNotification("Selected rolls exceed dispatch balance for one of the SO lines", "error");
+          return;
+        }
+
+        const payload = {
+          salesOrderId: normalizeId(data.salesOrderId),
+          dcDate: data.dcDate,
+          vehicleNumber: data.vehicleNumber,
+          driverName: data.driverName,
+          driverPhone: data.driverPhone,
+          notes: data.notes,
+          lines: selectedLines.map((l) => ({
+            soLineId: l.soLineId,
+            rollId: normalizeId(l.rollId),
+            shippedLengthMeters: l.shippedLengthMeters ? Number(l.shippedLengthMeters) : undefined,
+            shippedStatus: l.shippedStatus || "Packed",
+          })),
+        };
+
+        await salesService.createDeliveryChallan(payload);
 
         showNotification("Delivery challan created successfully", "success");
       }
@@ -410,12 +492,55 @@ const DeliveryChallans = () => {
     { field: "vehicleNumber", headerName: "Vehicle" },
   ];
 
+  const selectedRollIds = useMemo(() => {
+    const ids = new Set();
+    (fields || []).forEach((f) => {
+      const id = normalizeId(f.rollId);
+      if (id && f.selected) ids.add(id);
+    });
+    return ids;
+  }, [fields]);
+
+  // Render only up to the remaining dispatch balance per SO line (but always show selected rows).
+  // This keeps the "Rolls to Dispatch" list aligned with what can actually be dispatched.
+  const visibleLineIndices = useMemo(() => {
+    const visible = new Set();
+    const counts = {};
+    (fields || []).forEach((row, index) => {
+      const soLineId = normalizeId(row.soLineId);
+      const remaining = remainingBySoLine[soLineId] ?? 0;
+
+      if (row.selected) {
+        visible.add(index);
+        return;
+      }
+      if (remaining <= 0) return;
+
+      counts[soLineId] = (counts[soLineId] || 0) + 1;
+      if (counts[soLineId] <= remaining) {
+        visible.add(index);
+      }
+    });
+    return visible;
+  }, [fields, remainingBySoLine]);
+
+  const visibleRowsCount = useMemo(
+    () => visibleLineIndices.size,
+    [visibleLineIndices]
+  );
+
   const customActions = [
     {
       icon: <InvoiceIcon />,
       label: "Generate Invoice",
       onClick: handleGenerateInvoice,
-      show: (row) => row.status === "Open" && !row.invoicedInSIId,
+      show: (row) => row.status === "Posted" && !row.invoicedInSIId,
+    },
+    {
+      icon: <ShippingIcon />,
+      label: "Post / Dispatch",
+      onClick: handlePostChallan,
+      show: (row) => row.status === "Draft",
     },
     {
       icon: <PrintIcon />,
@@ -441,7 +566,14 @@ const DeliveryChallans = () => {
         maxWidth="lg"
         fullWidth
       >
-        <form onSubmit={handleSubmit(onSubmit)}>
+        <form
+          onSubmit={handleSubmit(onSubmit, () => {
+            showNotification(
+              "Please fill required fields (Sales Order, Date, Vehicle Number)",
+              "warning"
+            );
+          })}
+        >
           <DialogTitle>
             {selectedChallan
               ? `Delivery Challan: ${selectedChallan.dcNumber}`
@@ -553,38 +685,30 @@ const DeliveryChallans = () => {
                   <Table size="small">
                     <TableHead>
                       <TableRow>
-                        <TableCell>SKU</TableCell>
-                        <TableCell>Qty Rolls</TableCell>
-                        <TableCell>Dispatched</TableCell>
-                        <TableCell>Balance</TableCell>
-                        <TableCell>Width"</TableCell>
-                        <TableCell>Length (m/roll)</TableCell>
                         <TableCell>Category</TableCell>
                         <TableCell>Quality</TableCell>
                         <TableCell>GSM</TableCell>
+                        <TableCell>Width"</TableCell>                        
+                        <TableCell>Total Meters</TableCell>                        
                       </TableRow>
                     </TableHead>
                     <TableBody>
-                      {selectedSO.lines.map((line) => {
-                        const dispatched = Number(line.dispatchedQty) || 0;
-                        const qty = Number(line.qtyRolls) || 0;
-                        const balance = qty - dispatched;
-                        return (
+                      {selectedSO.lines
+                        .map((line) => {
+                          const dispatched = Number(line.dispatchedQty) || 0;
+                          const qty = Number(line.qtyRolls) || 0;
+                          const balance = Math.max(0, qty - dispatched);
+                          return { line, qty, dispatched, balance };
+                        })
+                        .map(({ line, qty, dispatched, balance }) => (
                           <TableRow key={line._id || line.id}>
-                            <TableCell>{resolveSkuCode(line)}</TableCell>
-                            <TableCell>{qty}</TableCell>
-                            <TableCell>{dispatched}</TableCell>
-                            <TableCell>{balance}</TableCell>
-                            <TableCell>{formatInches(resolveFromSku(line, "widthInches"))}</TableCell>
-                            <TableCell>
-                              {resolveFromSku(line, "lengthMetersPerRoll")}
-                            </TableCell>
                             <TableCell>{resolveFromSku(line, "categoryName")}</TableCell>
-                            <TableCell>{resolveFromSku(line, "qualityName")}</TableCell>
-                            <TableCell>{resolveFromSku(line, "gsm")}</TableCell>
-                          </TableRow>
-                        );
-                      })}
+                          <TableCell>{resolveFromSku(line, "qualityName")}</TableCell>
+                          <TableCell>{resolveFromSku(line, "gsm")}</TableCell>
+                          <TableCell>{formatInches(resolveFromSku(line, "widthInches"))}</TableCell>
+                          <TableCell>{formatNumber(line.totalMeters)}</TableCell>                            
+                        </TableRow>
+                      ))}
                     </TableBody>
                   </Table>
                 </TableContainer>
@@ -599,6 +723,7 @@ const DeliveryChallans = () => {
               <Table size="small">
                 <TableHead>
                   <TableRow>
+                    <TableCell>Select</TableCell>
                     <TableCell>SKU</TableCell>
                     <TableCell>Roll Number</TableCell>
                     <TableCell>Category</TableCell>
@@ -610,34 +735,65 @@ const DeliveryChallans = () => {
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {fields.map((field, index) => (
-                    <TableRow key={field.id}>
-                      <TableCell>{resolveSkuCode(field)}</TableCell>
-                      <TableCell>{field.rollNumber}</TableCell>
-                      <TableCell>{resolveFromSku(field, "categoryName")}</TableCell>
-                      <TableCell>{resolveFromSku(field, "gsm")}</TableCell>
-                      <TableCell>{resolveFromSku(field, "qualityName")}</TableCell>
-                      <TableCell>{formatInches(resolveFromSku(field, "widthInches"))}</TableCell>
-                      <TableCell>{field.shippedLengthMeters}</TableCell>
-                      <TableCell>
-                        <Controller
-                          name={`lines.${index}.shippedStatus`}
-                          control={control}
-                          render={({ field }) => (
-                            <Chip
-                              label={field.value}
-                              color={
-                                field.value === "Dispatched"
-                                  ? "success"
-                                  : "warning"
-                              }
-                              size="small"
-                            />
-                          )}
-                        />
+                  {visibleRowsCount === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={9}>
+                        <Typography variant="body2" color="text.secondary">
+                          No dispatchable rolls remaining for this sales order.
+                        </Typography>
                       </TableCell>
                     </TableRow>
-                  ))}
+                  ) : (
+                    fields.map((row, index) => {
+                      if (!visibleLineIndices.has(index)) return null;
+                      const soLineId = normalizeId(row.soLineId);
+                      const max = remainingBySoLine[soLineId] ?? 0;
+                      const selectedCount = selectedCountBySoLine[soLineId] ?? 0;
+                      const isChecked = Boolean(row.selected);
+                      const isDisabled =
+                        !!selectedChallan ||
+                        max === 0 ||
+                        (!isChecked && selectedCount >= max);
+
+                      return (
+                        <TableRow key={row.id}>
+                          <TableCell>
+                            <Controller
+                              name={`lines.${index}.selected`}
+                              control={control}
+                              render={({ field }) => (
+                                <Checkbox
+                                  checked={Boolean(field.value)}
+                                  disabled={isDisabled}
+                                  onChange={(e) => field.onChange(e.target.checked)}
+                                />
+                              )}
+                            />
+                          </TableCell>
+                          <TableCell>{resolveSkuCode(row)}</TableCell>
+                          <TableCell>{row.rollNumber}</TableCell>
+                          <TableCell>{resolveFromSku(row, "categoryName")}</TableCell>
+                          <TableCell>{resolveFromSku(row, "gsm")}</TableCell>
+                          <TableCell>{resolveFromSku(row, "qualityName")}</TableCell>
+                          <TableCell>{formatInches(resolveFromSku(row, "widthInches"))}</TableCell>
+                          <TableCell>{formatNumber(row.shippedLengthMeters)}</TableCell>
+                          <TableCell>
+                            <Controller
+                              name={`lines.${index}.shippedStatus`}
+                              control={control}
+                              render={({ field }) => (
+                                <Chip
+                                  label={field.value}
+                                  color={field.value === "Dispatched" ? "success" : "warning"}
+                                  size="small"
+                                />
+                              )}
+                            />
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
                 </TableBody>
               </Table>
             </TableContainer>

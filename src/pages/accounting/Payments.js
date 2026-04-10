@@ -95,11 +95,11 @@ const Payments = () => {
     { value: "Cheque", label: "Cheque" },
     { value: "RTGS", label: "RTGS" },
   ];
-  const customerOptions = customers.map((customer) => ({
+  const customerOptions = (customers || []).map((customer) => ({
     value: customer._id,
     label: customer.companyName || customer.customerCode || "Customer",
   }));
-  const supplierOptions = suppliers.map((supplier) => ({
+  const supplierOptions = (suppliers || []).map((supplier) => ({
     value: supplier._id,
     label: supplier.name,
   }));
@@ -153,9 +153,10 @@ const Payments = () => {
   const fetchSuppliers = async () => {
     try {
       const response = await masterService.getSuppliers({ active: true });
-      setSuppliers(response.data);
+      setSuppliers(response.suppliers || []);
     } catch (error) {
       console.error("Failed to fetch suppliers:", error);
+      setSuppliers([]);
     }
   };
 

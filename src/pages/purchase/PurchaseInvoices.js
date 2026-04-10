@@ -445,7 +445,9 @@ const PurchaseInvoices = () => {
     try {
       const response = await purchaseService.getPurchaseOrders({
         supplierId,
-        status: ["Approved", "PartiallyReceived"],
+        // API purchase order statuses are: Draft, Pending, Approved, Partial, Complete, Cancelled, Closed
+        // Include Partial so partially invoiced/received POs keep showing pending balance.
+        status: ["Approved", "Partial", "Pending"],
       });
 
       const ordersData =

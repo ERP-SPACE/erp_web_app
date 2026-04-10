@@ -72,7 +72,7 @@ const SalesOrders = () => {
   const [showDueDaysEditor, setShowDueDaysEditor] = useState(false);
   const customerOptions = customers.map((customer) => ({
     value: customer._id,
-    label: customer.creditPolicy?.isBlocked 
+    label: customer.creditPolicy?.isBlocked
       ? `${customer.companyName || customer.customerCode || "Customer"} (${customer.customerCode || "N/A"}) - BLOCKED`
       : `${customer.companyName || customer.customerCode || "Customer"} (${customer.customerCode || "N/A"})`,
     isBlocked: customer.creditPolicy?.isBlocked || false,
@@ -168,6 +168,24 @@ const SalesOrders = () => {
     return Number.isFinite(num) ? num : 0;
   }, []);
 
+  // More forgiving parser for API values that may come as formatted strings
+  // (e.g. "77,470.00" or "₹77,470.00").
+  const toNumberLoose = useCallback((val) => {
+    if (val === null || val === undefined) return 0;
+    if (typeof val === "number") return Number.isFinite(val) ? val : 0;
+    if (typeof val === "string") {
+      const cleaned = val.replace(/[₹,$,\s]/g, "").replace(/,/g, "");
+      const n = Number(cleaned);
+      return Number.isFinite(n) ? n : 0;
+    }
+    if (typeof val === "object" && val?.floatValue !== undefined) {
+      const n = Number(val.floatValue);
+      return Number.isFinite(n) ? n : 0;
+    }
+    const n = Number(val);
+    return Number.isFinite(n) ? n : 0;
+  }, []);
+
   const normalizeLine = useCallback(
     (line = {}) => ({
       ...line,
@@ -183,6 +201,17 @@ const SalesOrders = () => {
   const watchDiscountPercent = watch("discountPercent");
   const watchCreditDays = watch("creditDays");
   const watchGraceDays = watch("graceDays");
+
+  const dueDaysSaveDebounceRef = useRef(null);
+  const dueDaysSaveSeqRef = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      if (dueDaysSaveDebounceRef.current) {
+        clearTimeout(dueDaysSaveDebounceRef.current);
+      }
+    };
+  }, []);
 
   const pendingLimit = useMemo(() => {
     const limit =
@@ -221,6 +250,64 @@ const SalesOrders = () => {
     setValue("dueDays", toNumber(watchCreditDays) + toNumber(watchGraceDays));
   }, [watchCreditDays, watchGraceDays, setValue, toNumber]);
 
+  const persistSelectedCustomerCreditPolicy = useCallback(
+    (nextCreditDays, nextGraceDays) => {
+      if (!selectedCustomer?._id) return;
+
+      const creditDays = toNumber(nextCreditDays);
+      const graceDays = toNumber(nextGraceDays);
+
+      // Optimistic local update so UI reflects immediately
+      const nextCreditPolicy = {
+        ...(selectedCustomer.creditPolicy || {}),
+        creditDays,
+        graceDays,
+      };
+      setSelectedCustomer((prev) =>
+        prev?._id === selectedCustomer._id
+          ? { ...prev, creditPolicy: nextCreditPolicy }
+          : prev
+      );
+      setCustomers((prev) =>
+        (prev || []).map((c) =>
+          c?._id === selectedCustomer._id ? { ...c, creditPolicy: nextCreditPolicy } : c
+        )
+      );
+
+      // Debounced persist to backend
+      if (dueDaysSaveDebounceRef.current) {
+        clearTimeout(dueDaysSaveDebounceRef.current);
+      }
+      const seq = ++dueDaysSaveSeqRef.current;
+      dueDaysSaveDebounceRef.current = setTimeout(async () => {
+        try {
+          const updated = await masterService.updateCreditPolicy(
+            selectedCustomer._id,
+            nextCreditPolicy
+          );
+
+          // Ignore stale responses
+          if (seq !== dueDaysSaveSeqRef.current) return;
+
+          if (updated?._id) {
+            setSelectedCustomer((prev) =>
+              prev?._id === updated._id ? updated : prev
+            );
+            setCustomers((prev) =>
+              (prev || []).map((c) => (c?._id === updated._id ? updated : c))
+            );
+          }
+
+          setShowDueDaysEditor(false);
+        } catch (error) {
+          // Keep editor open so user can retry/change; show a toast
+          showNotification("Failed to update customer due days", "error");
+        }
+      }, 350);
+    },
+    [selectedCustomer, setCustomers, setSelectedCustomer, showNotification, toNumber]
+  );
+
   const fetchSalesOrders = async () => {
     setLoading(true);
     try {
@@ -253,9 +340,9 @@ const SalesOrders = () => {
 
   const checkCustomerCredit = async (customerId) => {
     try {
-      const response = await masterService.checkCredit(customerId);
-      setCreditCheckResult(response.data);
-      if (response.data.blocked) {
+      const result = await masterService.checkCredit(customerId);
+      setCreditCheckResult(result);
+      if (result?.blocked) {
         showNotification("Warning: Customer credit blocked!", "warning");
       }
     } catch (error) {
@@ -318,7 +405,10 @@ const SalesOrders = () => {
         return 0;
       }
 
-      return Math.round((benchmarkRate * (width / 44) + Number.EPSILON) * 100) / 100;
+      // Original behavior: keep 2 decimals for width-derived rate
+      return (
+        Math.round((benchmarkRate * (width / 44) + Number.EPSILON) * 100) / 100
+      );
     },
     [toNumber]
   );
@@ -383,64 +473,87 @@ const SalesOrders = () => {
 
   const resolveTaxRate = useCallback(
     (line) => {
+      const direct = normalizeTaxRate(line?.taxRate);
+      if (direct) return direct;
       const sku = skuById[normalizeId(line?.skuId)] || {};
-      return normalizeTaxRate(sku.taxRate);
+      const productTaxRate =
+        sku?.productId?.taxRate ??
+        sku?.product?.taxRate ??
+        sku?.productId?.taxrate ??
+        sku?.product?.taxrate;
+      return normalizeTaxRate(productTaxRate ?? sku.taxRate);
     },
     [skuById, normalizeId, normalizeTaxRate]
   );
 
   // Sales pricing is derived from the product's 44" benchmark rate.
   // For example, 24" uses: rate44 * (24 / 44).
+  const getTotalMetersForLine = useCallback(
+    (line = {}) => {
+      const groups = Array.isArray(line?.bifurcations) ? line.bifurcations : [];
+      if (groups.length > 0) {
+        const sum = groups.reduce(
+          (s, g) => s + toNumber(g?.qty) * toNumber(g?.lengthMeters),
+          0
+        );
+        if (sum > 0) return sum;
+      }
+
+      return (
+        toNumber(line?.totalMeters) ||
+        toNumber(line?.lengthMetersPerRoll) * toNumber(line?.qtyRolls)
+      );
+    },
+    [toNumber]
+  );
+
   const calculateLinePrice = useCallback(
     (line, baseRate, discountPercent) => {
+      // Original behavior: rate is derived for selected width, then applied per-meter
       const rate = toNumber(baseRate);
-      // Use explicitly stored totalMeters (from direct input or bifurcation) when available
-      const totalMeters =
-        toNumber(line?.totalMeters) ||
-        toNumber(line?.lengthMetersPerRoll) * toNumber(line?.qtyRolls);
+      const totalMeters = getTotalMetersForLine(line);
       const lineTotal = totalMeters * rate;
-
       const hasOverride =
         line?.overrideRatePerRoll !== null &&
         line?.overrideRatePerRoll !== undefined &&
         line?.overrideRatePerRoll !== "";
       const finalRate = hasOverride ? toNumber(line?.overrideRatePerRoll) : rate;
 
-      const taxRate = resolveTaxRate(line);
-
       return {
         derivedRate: rate,
         finalRate,
-        taxRate,
         lineTotal,
       };
     },
-    [resolveTaxRate, toNumber]
+    [
+      calculateWidthDerivedRate,
+      getTotalMetersForLine,
+      normalizeId,
+      skuById,
+      toNumber,
+    ]
   );
 
   const computeTotals = useCallback(
     (lines = [], discountPercent = 0) => {
       let subtotal = 0;
-      const discountAmount = 0;
-      const taxAmount = 0;
 
       lines.forEach((line) => {
-        const effectiveMeters =
-          toNumber(line?.totalMeters) ||
-          (toNumber(line?.lengthMetersPerRoll) * toNumber(line?.qtyRolls));
-        if (effectiveMeters > 0) {
-          subtotal += effectiveMeters * getLineBaseRate(line);
-        }
+        const lineTotal = toNumberLoose(line?.lineTotal);
+        subtotal += lineTotal;
       });
+
+      const discountAmount =
+        (subtotal * (toNumber(discountPercent) || 0)) / 100;
 
       return {
         subtotal,
         discountAmount,
-        taxAmount,
-        total: subtotal,
+        taxAmount: 0,
+        total: subtotal - discountAmount,
       };
     },
-    [toNumber, getLineBaseRate]
+    [toNumber, toNumberLoose]
   );
 
   const [totals, setTotals] = useState({
@@ -511,7 +624,7 @@ const SalesOrders = () => {
       dueDays:
         row.dueDays ??
         (customer?.creditPolicy?.creditDays || 0) +
-          (customer?.creditPolicy?.graceDays || 0),
+        (customer?.creditPolicy?.graceDays || 0),
       lines: (row.lines || []).map((line) => {
         const derived = deriveSkuFields(line);
         return normalizeLine({
@@ -581,7 +694,7 @@ const SalesOrders = () => {
       dueDays:
         row.dueDays ??
         (editCustomer?.creditPolicy?.creditDays || 0) +
-          (editCustomer?.creditPolicy?.graceDays || 0),
+        (editCustomer?.creditPolicy?.graceDays || 0),
       lines: (row.lines || []).map((line) => {
         const derived = deriveSkuFields(line);
         return normalizeLine({
@@ -607,6 +720,7 @@ const SalesOrders = () => {
       const product = sku.productId || sku.product; // Handle both populated and direct reference
       const defaultLength =
         product?.defaultLengthMeters ?? sku.lengthMetersPerRoll ?? "";
+      const taxRate = normalizeTaxRate(product?.taxRate ?? sku.taxRate ?? 0);
 
       const categoryName =
         product?.categoryId?.name ||
@@ -636,6 +750,7 @@ const SalesOrders = () => {
         lengthMetersPerRoll: defaultLength,
         totalMeters: 0,
         bifurcations: [],
+        taxRate,
       });
 
       // Calculate pricing (lineTotal) using product-specific rate
@@ -681,7 +796,7 @@ const SalesOrders = () => {
   const handleOpenBifurcation = (index) => {
     const line = watchLines[index] || {};
     const length = toNumber(line.lengthMetersPerRoll) || 1000;
-    const totalM = toNumber(line.totalMeters) || toNumber(line.lengthMetersPerRoll) * toNumber(line.qtyRolls);
+    const totalM = getTotalMetersForLine(line);
     const existingGroups = Array.isArray(line.bifurcations) && line.bifurcations.length > 0
       ? line.bifurcations
       : [{ qty: toNumber(line.qtyRolls) || Math.ceil(totalM / length), lengthMeters: length }];
@@ -730,6 +845,16 @@ const SalesOrders = () => {
     });
   };
 
+  const handleRecheckCredit = async (row) => {
+    try {
+      await salesService.recheckSalesOrderCredit(row._id);
+      showNotification("Credit re-check completed", "success");
+      fetchSalesOrders();
+    } catch (error) {
+      showNotification(error.message || "Failed to re-check credit", "error");
+    }
+  };
+
   const confirmActionHandler = async () => {
     try {
       switch (confirmAction.type) {
@@ -767,7 +892,9 @@ const SalesOrders = () => {
           return {
             ...normalizeLine(line),
             lineTotal: pricing.lineTotal,
-            totalMeters: line.lengthMetersPerRoll * line.qtyRolls,
+            derivedRatePerRoll: pricing.derivedRate,
+            finalRatePerRoll: pricing.finalRate,
+            totalMeters: getTotalMetersForLine(line),
           };
         }
         return normalizeLine(line);
@@ -835,11 +962,20 @@ const SalesOrders = () => {
       field: "creditCheckPassed",
       headerName: "Credit",
       renderCell: (params) => {
-        const passed = Boolean(params.value);
-        const label = passed ? "Credit check passed" : "Credit check blocked";
+        const status = formatDisplayValue(params.row?.status);
+        const isDraft = status === "Draft";
+        const passed = isDraft ? null : Boolean(params.value);
+        const label =
+          passed === null
+            ? "Credit check not performed yet (Draft)"
+            : passed
+              ? "Credit check passed"
+              : "Credit check blocked";
         return (
           <Tooltip title={label} arrow>
-            {passed ? (
+            {passed === null ? (
+              <CalculateIcon sx={{ color: "text.disabled" }} />
+            ) : passed ? (
               <ConfirmIcon color="success" />
             ) : (
               <WarningIcon color="error" />
@@ -851,17 +987,17 @@ const SalesOrders = () => {
     {
       field: "total",
       headerName: "Total Amount",
-      renderCell: (params) => {
-        const order = params.row;
-        // Use stored total; fall back to summing per-line stored lineTotals
-        const total =
-          toNumber(order.total) ||
-          (order.lines || []).reduce(
-            (sum, line) => sum + toNumber(line.lineTotal),
-            0
-          );
-        return formatCurrency(total);
+      valueGetter: (params) => {
+        const row = params?.row || {};
+        return (
+          row.total ??
+          row.totalAmount ??          
+          row.netTotal ??
+          row.subtotal ??
+          0
+        );
       },
+      valueFormatter: (params) => formatCurrency(toNumberLoose(params.value)),
     },
   ];
 
@@ -871,6 +1007,12 @@ const SalesOrders = () => {
       label: "Confirm",
       onClick: handleConfirm,
       show: (row) => row.status === "Draft",
+    },
+    {
+      icon: <CreditCheckIcon />,
+      label: "Re-check Credit",
+      onClick: handleRecheckCredit,
+      show: (row) => row.status === "OnHold",
     },
     {
       icon: <CancelIcon />,
@@ -905,8 +1047,8 @@ const SalesOrders = () => {
             {viewMode
               ? `View Sales Order: ${selectedOrder?.soNumber}`
               : selectedOrder
-              ? `Edit Sales Order: ${selectedOrder.soNumber}`
-              : "Add Sales Order"}
+                ? `Edit Sales Order: ${selectedOrder.soNumber}`
+                : "Add Sales Order"}
           </DialogTitle>
           <DialogContent>
             {/* ── Two-column header ── */}
@@ -1059,9 +1201,14 @@ const SalesOrders = () => {
                                         type="number"
                                         size="small"
                                         inputProps={{ min: 0 }}
-                                        onChange={(e) =>
-                                          field.onChange(Number(e.target.value))
-                                        }
+                                        onChange={(e) => {
+                                          const next = Number(e.target.value);
+                                          field.onChange(next);
+                                          persistSelectedCustomerCreditPolicy(
+                                            next,
+                                            watchGraceDays
+                                          );
+                                        }}
                                         sx={{ width: 120 }}
                                       />
                                     )}
@@ -1076,9 +1223,14 @@ const SalesOrders = () => {
                                         type="number"
                                         size="small"
                                         inputProps={{ min: 0 }}
-                                        onChange={(e) =>
-                                          field.onChange(Number(e.target.value))
-                                        }
+                                        onChange={(e) => {
+                                          const next = Number(e.target.value);
+                                          field.onChange(next);
+                                          persistSelectedCustomerCreditPolicy(
+                                            watchCreditDays,
+                                            next
+                                          );
+                                        }}
                                         sx={{ width: 120 }}
                                       />
                                     )}
@@ -1179,8 +1331,6 @@ const SalesOrders = () => {
                     <TableCell>GSM</TableCell>
                     <TableCell>Quality</TableCell>
                     <TableCell>Width"</TableCell>
-                    <TableCell>Length/Roll</TableCell>
-                    <TableCell>Qty</TableCell>
                     <TableCell>Base Rate</TableCell>
                     <TableCell>Total Meters</TableCell>
                     <TableCell>Rate</TableCell>
@@ -1199,15 +1349,13 @@ const SalesOrders = () => {
                       baseRate,
                       watchDiscountPercent
                     );
-                    const effectiveTotalMeters =
-                      toNumber(line.totalMeters) ||
-                      toNumber(line.lengthMetersPerRoll) * toNumber(line.qtyRolls);
+                    const effectiveTotalMeters = getTotalMetersForLine(line);
                     const hasBifurcation =
                       Array.isArray(line.bifurcations) && line.bifurcations.length > 0;
 
                     return (
                       <TableRow key={field.id}>
-                        <TableCell>
+                        <TableCell sx={{ minWidth: 400 }}>
                           <Controller
                             name={`lines.${index}.skuId`}
                             control={control}
@@ -1232,39 +1380,6 @@ const SalesOrders = () => {
                         <TableCell>{formatDisplayValue(line?.gsm)}</TableCell>
                         <TableCell>{formatDisplayValue(line?.qualityName)}</TableCell>
                         <TableCell>{formatInches(line?.widthInches)}</TableCell>
-                        <TableCell>
-                          <Controller
-                            name={`lines.${index}.lengthMetersPerRoll`}
-                            control={control}
-                            render={({ field }) => (
-                              <TextField
-                                {...field}
-                                type="number"
-                                size="small"
-                                sx={{ width: 80 }}
-                                disabled={viewMode}
-                              />
-                            )}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <Controller
-                            name={`lines.${index}.qtyRolls`}
-                            control={control}
-                            render={({ field }) => (
-                              <TextField
-                                {...field}
-                                type="number"
-                                size="small"
-                                sx={{ width: 60 }}
-                                disabled={viewMode}
-                                onChange={(e) =>
-                                  handleQtyChange(index, e.target.value)
-                                }
-                              />
-                            )}
-                          />
-                        </TableCell>
                         <TableCell sx={{ minWidth: 130 }}>
                           {!hasSkuSelected ? (
                             <Typography variant="body2" color="text.disabled">—</Typography>
@@ -1361,14 +1476,21 @@ const SalesOrders = () => {
                                 thousandSeparator=","
                                 decimalScale={2}
                                 sx={{ width: 100 }}
-                                placeholder="Optional"
-                                disabled={viewMode}
-                                onValueChange={(values) =>
-                                  handleOverrideRateChange(
-                                    index,
-                                    values.floatValue
-                                  )
+                                value={
+                                  field.value === null ||
+                                  field.value === undefined ||
+                                  field.value === ""
+                                    ? pricing.derivedRate
+                                    : field.value
                                 }
+                                placeholder="Auto"
+                                disabled={viewMode}
+                                onValueChange={(values) => {
+                                  const next =
+                                    values.floatValue === undefined ? null : values.floatValue;
+                                  field.onChange(next);
+                                  handleOverrideRateChange(index, next);
+                                }}
                               />
                             )}
                           />
@@ -1443,9 +1565,6 @@ const SalesOrders = () => {
                   </Typography>
                   <Typography variant="body2" gutterBottom>
                     Discount: {formatCurrency(totals.discountAmount)}
-                  </Typography>
-                  <Typography variant="body2" gutterBottom>
-                    Tax: {formatCurrency(totals.taxAmount)}
                   </Typography>
                   <Divider sx={{ my: 1 }} />
                   <Typography variant="h6">
@@ -1651,29 +1770,29 @@ const SalesOrders = () => {
                 </Typography>
               </Box>
 
-                {creditCheckResult.reasons &&
-                  creditCheckResult.reasons.length > 0 && (
-                    <Box sx={{ mt: 2 }}>
-                      <Typography variant="subtitle2" gutterBottom>
-                        Reasons:
-                      </Typography>
-                      {creditCheckResult.reasons.map((reason, index) => {
-                        const reasonText =
-                          typeof reason === "string"
-                            ? reason
-                            : reason?.name ||
-                              reason?.value ||
-                              reason?.description ||
-                              reason?._id ||
-                              JSON.stringify(reason);
-                        return (
-                          <Typography key={index} variant="body2" color="error">
-                            • {reasonText}
-                          </Typography>
-                        );
-                      })}
-                    </Box>
-                  )}
+              {creditCheckResult.reasons &&
+                creditCheckResult.reasons.length > 0 && (
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="subtitle2" gutterBottom>
+                      Reasons:
+                    </Typography>
+                    {creditCheckResult.reasons.map((reason, index) => {
+                      const reasonText =
+                        typeof reason === "string"
+                          ? reason
+                          : reason?.name ||
+                          reason?.value ||
+                          reason?.description ||
+                          reason?._id ||
+                          JSON.stringify(reason);
+                      return (
+                        <Typography key={index} variant="body2" color="error">
+                          • {reasonText}
+                        </Typography>
+                      );
+                    })}
+                  </Box>
+                )}
             </Box>
           )}
         </DialogContent>

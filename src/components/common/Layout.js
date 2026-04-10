@@ -98,7 +98,7 @@ const menuItems = [
     title: "Inventory",
     icon: <Inventory />,
     children: [
-      { title: "Rolls", path: "/rolls", icon: <Inventory2Icon /> },
+      // { title: "Rolls", path: "/rolls", icon: <Inventory2Icon /> },
       { title: "Unmapped Rolls", path: "/unmapped-rolls", icon: <LowStockIcon /> },
       { title: "Stock Summary", path: "/stock-summary", icon: <BarChartIcon /> },
     ],

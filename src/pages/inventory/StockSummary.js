@@ -9,6 +9,11 @@ import {
   CardContent,
   TextField,
   Chip,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
 } from "@mui/material";
 import {
   Inventory as InventoryIcon,
@@ -34,6 +39,11 @@ const StockSummary = () => {
   const [filters, setFilters] = useState({
     categoryId: "",
     status: "Mapped",
+  });
+  const [rollDetailsDialog, setRollDetailsDialog] = useState({
+    open: false,
+    row: null,
+    rolls: [],
   });
   const statusOptions = [
     { value: "", label: "All" },
@@ -69,6 +79,7 @@ const StockSummary = () => {
         return {
           id: item.id || idx,
           status: id.status || item.status || "-",
+          skuId: id.skuId || item.skuId || "",
           skuCode: item.skuCode || id.skuCode || "-",
           categoryName: item.categoryName || id.categoryName || "-",
           gsm: item.gsm || id.gsm || "-",
@@ -103,8 +114,36 @@ const StockSummary = () => {
     }
   };
 
-  const columns = [
-    { field: "status", headerName: "Status" },
+  const openRollDetails = async (row) => {
+    if (!row?.skuId) {
+      showNotification("SKU not available for this row", "warning");
+      return;
+    }
+    try {
+      setLoading(true);
+      const res = await inventoryService.getRolls({
+        skuId: row.skuId,
+        status: row.status && row.status !== "-" ? row.status : undefined,
+        limit: 200,
+        page: 1,
+      });
+      setRollDetailsDialog({
+        open: true,
+        row,
+        rolls: res.rolls || [],
+      });
+    } catch (e) {
+      showNotification("Failed to fetch roll details", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const closeRollDetails = () => {
+    setRollDetailsDialog({ open: false, row: null, rolls: [] });
+  };
+
+  const columns = [    
     {
       field: "skuCode",
       headerName: "SKU Code",
@@ -124,36 +163,21 @@ const StockSummary = () => {
     },
     {
       field: "totalRolls",
-      headerName: "Total Rolls",
+      headerName: "Inventory Rolls",
       renderCell: (params) => (
         <Chip label={formatNumber(params.value)} color="primary" size="small" />
       ),
     },
     {
       field: "totalLengthMeters",
-      headerName: "Total Length (m)",
+      headerName: "Inventory Length (m)",
       renderCell: (params) => formatNumber(params.value, 2),
     },
     {
       field: "totalValue",
-      headerName: "Total Value",
+      headerName: "Inventory Value",
       renderCell: (params) => formatCurrency(params.value),
-    },
-    {
-      field: "avgCostPerRoll",
-      headerName: "Avg Cost/Roll",
-      renderCell: (params) => formatCurrency(params.value),
-    },
-    {
-      field: "allocatedRolls",
-      headerName: "Allocated",
-      renderCell: (params) => formatNumber(params.value),
-    },
-    {
-      field: "dispatchedRolls",
-      headerName: "Dispatched",
-      renderCell: (params) => formatNumber(params.value),
-    },
+    },    
   ];
 
   const summaryCards = [
@@ -232,7 +256,61 @@ const StockSummary = () => {
         columns={columns}
         rows={stockData}
         hideAddButton
+        onRowClick={openRollDetails}
       />
+
+      <Dialog
+        open={rollDetailsDialog.open}
+        onClose={closeRollDetails}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle>
+          Roll Details
+          {rollDetailsDialog.row
+            ? ` — ${rollDetailsDialog.row.skuCode} (${rollDetailsDialog.row.status})`
+            : ""}
+        </DialogTitle>
+        <DialogContent dividers>
+          {rollDetailsDialog.rolls.length === 0 ? (
+            <Typography variant="body2" color="text.secondary">
+              No rolls found for this selection.
+            </Typography>
+          ) : (
+            <DataTable
+              title=""
+              rows={rollDetailsDialog.rolls}
+              hideAddButton
+              showActions={false}
+              columns={[
+                { field: "rollNumber", headerName: "Roll No", flex: 1 },
+                { field: "barcode", headerName: "Barcode", flex: 1 },
+                { field: "status", headerName: "Status" },
+                {
+                  field: "lengthMeters",
+                  headerName: "Length (m)",
+                  renderCell: (p) => formatNumber(p.value, 2),
+                },
+                {
+                  field: "landedCostPerMeter",
+                  headerName: "Landed ₹/m",
+                  renderCell: (p) => formatCurrency(p.value || 0),
+                },
+                {
+                  field: "totalLandedCost",
+                  headerName: "Total Landed",
+                  renderCell: (p) => formatCurrency(p.value || 0),
+                },
+                { field: "batchCode", headerName: "Batch" },
+                { field: "supplierName", headerName: "Supplier", flex: 1 },
+              ]}
+            />
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={closeRollDetails}>Close</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

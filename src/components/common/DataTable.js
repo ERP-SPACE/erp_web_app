@@ -28,6 +28,7 @@ const DataTable = ({
   onEdit,
   onDelete,
   onView,
+  onRowClick,
   onSearch,
   searchPlaceholder = "Search...",
   showActions = true,
@@ -224,6 +225,7 @@ const DataTable = ({
             onPaginationModelChange={setPaginationModel}
             pageSizeOptions={[10, 20, 50, 100]}
             disableRowSelectionOnClick
+            onRowClick={onRowClick ? (params) => onRowClick(params.row) : undefined}
             slots={{
               toolbar: GridToolbar,
             }}

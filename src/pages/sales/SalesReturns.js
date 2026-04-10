@@ -26,6 +26,11 @@ import { buildSingleSelectAutocompleteProps } from "../../utils/autocomplete";
 import { useApp } from "../../contexts/AppContext";
 import salesService from "../../services/salesService";
 import { formatCurrency, formatDate, getStatusColor } from "../../utils/formatters";
+import {
+  toNumber,
+  computeInvoiceRollLineAmounts,
+  deriveRatePerRollFromTaxInclusiveLineTotal,
+} from "../../utils/salesLinePricing";
 
 const normalizeId = (value) => {
   if (value && typeof value === "object") {
@@ -34,9 +39,14 @@ const normalizeId = (value) => {
   return value || "";
 };
 
-const toNumber = (val) => {
-  const num = Number(val);
-  return Number.isFinite(num) ? num : 0;
+const computeSiLineAmounts = (siLine) => {
+  let rate = toNumber(siLine?.ratePerRoll);
+  if (rate <= 0) rate = deriveRatePerRollFromTaxInclusiveLineTotal(siLine);
+  return computeInvoiceRollLineAmounts({
+    ...siLine,
+    qtyRolls: 1,
+    ratePerRoll: rate,
+  });
 };
 
 const SalesReturns = () => {
@@ -51,7 +61,7 @@ const SalesReturns = () => {
   const invoiceOptions = useMemo(
     () =>
       (postedInvoices || []).map((si) => ({
-        value: si._id,
+        value: normalizeId(si),
         label: `${si.siNumber} - ${si.customerName}`,
       })),
     [postedInvoices]
@@ -124,22 +134,19 @@ const SalesReturns = () => {
     let subtotal = 0;
     let discountTotal = 0;
     let taxAmount = 0;
+    let total = 0;
 
     (selectedInvoice?.lines || []).forEach((l) => {
       const rollId = normalizeId(l.rollId);
       if (!rollId || !idSet.has(String(rollId))) return;
 
-      const lineSubtotal = 1 * toNumber(l.ratePerRoll);
-      const lineDiscount = lineSubtotal * (toNumber(l.discountLine) / 100);
-      const taxable = lineSubtotal - lineDiscount;
-      const lineTax = taxable * (toNumber(l.taxRate) / 100);
-
-      subtotal += lineSubtotal;
-      discountTotal += lineDiscount;
-      taxAmount += lineTax;
+      const amounts = computeSiLineAmounts(l);
+      subtotal += amounts.lineSubtotal;
+      discountTotal += amounts.lineDiscount;
+      taxAmount += amounts.lineTax;
+      total += amounts.lineTotal;
     });
 
-    const total = subtotal - discountTotal + taxAmount;
     return { subtotal, discountTotal, taxAmount, total };
   }, [selectedInvoice, watchSelectedRollIds]);
 
@@ -357,11 +364,7 @@ const SalesReturns = () => {
                 {(selectedInvoice.lines || []).map((l, idx) => {
                   const rollId = normalizeId(l.rollId);
                   const checked = (watchSelectedRollIds || []).map(String).includes(String(rollId));
-                  const lineSubtotal = toNumber(l.ratePerRoll);
-                  const lineDiscount = lineSubtotal * (toNumber(l.discountLine) / 100);
-                  const taxable = lineSubtotal - lineDiscount;
-                  const lineTax = taxable * (toNumber(l.taxRate) / 100);
-                  const lineTotal = taxable + lineTax;
+                  const amounts = computeSiLineAmounts(l);
 
                   return (
                     <Box
@@ -390,14 +393,14 @@ const SalesReturns = () => {
                               {l.rollNumber} ({l.qualityName || ""} {l.gsm || ""} GSM)
                             </Typography>
                             <Typography variant="caption" color="text.secondary">
-                              Rate: {formatCurrency(l.ratePerRoll)} | Disc: {toNumber(l.discountLine)}% | Tax:{" "}
+                              Disc: {toNumber(l.discountLine)}% | Tax:{" "}
                               {toNumber(l.taxRate)}%
                             </Typography>
                           </Box>
                         }
                       />
                       <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {formatCurrency(lineTotal)}
+                        {formatCurrency(amounts.lineTotal)}
                       </Typography>
                     </Box>
                   );

@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
   Autocomplete,
   Box,
   Button,
+  FormControlLabel,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -20,6 +21,7 @@ import {
   Chip,
   Divider,
   Alert,
+  Checkbox,
 } from "@mui/material";
 import { DatePicker } from "@mui/x-date-pickers";
 import {
@@ -41,6 +43,12 @@ import {
   formatInches,
   getStatusColor,
 } from "../../utils/formatters";
+import {
+  deriveRatePerRollForInvoiceRoll,
+  normalizeInvoiceRollLineForSave,
+  ensureInvoiceLinesHaveRatePerRoll,
+  computeInvoiceRollLineAmounts,
+} from "../../utils/salesLinePricing";
 
 const normalizeId = (value) => {
   if (value && typeof value === "object") {
@@ -54,6 +62,62 @@ const toNumber = (val) => {
   return Number.isFinite(num) ? num : 0;
 };
 
+/** One row per SO line: rolls, meters, and amounts aggregated from roll-level invoice lines. */
+const groupInvoiceLinesByOrderLine = (lines) => {
+  if (!lines?.length) return [];
+  const map = new Map();
+  lines.forEach((line, idx) => {
+    const key =
+      normalizeId(line.soLineId) ||
+      `roll:${normalizeId(line.rollId)}:${line.rollNumber ?? idx}`;
+    if (!map.has(key)) {
+      map.set(key, {
+        key,
+        categoryName: line.categoryName,
+        gsm: line.gsm,
+        qualityName: line.qualityName,
+        widthInches: line.widthInches,
+        rolls: [],
+      });
+    }
+    map.get(key).rolls.push(line);
+  });
+  return Array.from(map.values()).map((g) => {
+    const { rolls } = g;
+    const first = rolls[0];
+    const totalRolls = rolls.reduce((s, l) => s + toNumber(l.qtyRolls), 0);
+    const totalMeters = rolls.reduce(
+      (s, l) => s + toNumber(l.billedLengthMeters),
+      0
+    );
+    let lineSubtotal = 0;
+    let lineTax = 0;
+    let lineCogs = 0;
+    rolls.forEach((line) => {
+      const sub = toNumber(line.qtyRolls) * toNumber(line.ratePerRoll);
+      const disc = (sub * toNumber(line.discountLine)) / 100;
+      const taxable = sub - disc;
+      lineSubtotal += sub;
+      lineTax += (taxable * toNumber(line.taxRate)) / 100;
+      lineCogs += toNumber(line.cogsAmount);
+    });
+    return {
+      key: g.key,
+      categoryName: g.categoryName,
+      gsm: g.gsm,
+      qualityName: g.qualityName,
+      widthInches: g.widthInches,
+      totalRolls,
+      totalMeters,
+      taxRate: toNumber(first.taxRate),
+      lineSubtotal,
+      lineTax,
+      lineTotal: lineSubtotal + lineTax,
+      lineCogs,
+    };
+  });
+};
+
 const SalesInvoices = () => {
   const { showNotification, setLoading } = useApp();
   const [invoices, setInvoices] = useState([]);
@@ -61,8 +125,9 @@ const SalesInvoices = () => {
   const [selectedDC, setSelectedDC] = useState(null);
   const [openDialog, setOpenDialog] = useState(false);
   const [selectedInvoice, setSelectedInvoice] = useState(null);
+  const [showRollDetails, setShowRollDetails] = useState(false);
   const deliveryChallanOptions = deliveryChallans.map((dc) => ({
-    value: dc._id,
+    value: normalizeId(dc),
     label: `${dc.dcNumber} - ${dc.customerName}`,
   }));
   const [confirmPost, setConfirmPost] = useState(false);
@@ -88,10 +153,34 @@ const SalesInvoices = () => {
   const watchDeliveryChallanId = watch("deliveryChallanId");
   const watchLines = watch("lines");
 
+  const groupedOrderLines = useMemo(
+    () => groupInvoiceLinesByOrderLine(watchLines || []),
+    [watchLines]
+  );
+
   useEffect(() => {
     fetchSalesInvoices();
     fetchDeliveryChallans();
   }, []);
+
+  const ensureDeliveryChallanInOptions = async (dcId) => {
+    const normalizedId = normalizeId(dcId);
+    if (!normalizedId) return;
+
+    const alreadyPresent = deliveryChallans.some(
+      (dc) => normalizeId(dc) === normalizedId
+    );
+    if (alreadyPresent) return;
+
+    try {
+      const response = await salesService.getDeliveryChallan(normalizedId);
+      const dc = response.data;
+      setDeliveryChallans((prev) => [...prev, dc]);
+    } catch (error) {
+      // If it can't be fetched (permissions, deleted, etc), just leave it blank
+      console.warn("Failed to load delivery challan for display:", error);
+    }
+  };
 
   useEffect(() => {
     const dcId = normalizeId(watchDeliveryChallanId);
@@ -142,7 +231,8 @@ const SalesInvoices = () => {
       // Initialize invoice lines from DC lines with pricing and COGS
       const invoiceLines = [];
       for (const dcLine of dc.lines) {
-        const soLine = so.lines.find((l) => l._id === dcLine.soLineId);
+        const soLineId = normalizeId(dcLine.soLineId);
+        const soLine = so.lines.find((l) => normalizeId(l?._id) === soLineId);
         const rollId = normalizeId(dcLine.rollId);
         
         // inventoryService.getRoll returns the roll object directly (axios interceptor unwraps response.data)
@@ -155,12 +245,11 @@ const SalesInvoices = () => {
           }
         }
 
-        const ratePerRoll = toNumber(
-          soLine?.finalRatePerRoll ??
-            dcLine?.finalRatePerRoll ??
-            dcLine?.ratePerRoll ??
-            soLine?.derivedRatePerRoll
-        );
+        const billedMeters = toNumber(dcLine.shippedLengthMeters);
+        const ratePerRoll = deriveRatePerRollForInvoiceRoll({
+          soLine,
+          dcLine: { ...dcLine, shippedLengthMeters: billedMeters },
+        });
         const taxRate = toNumber(
           soLine?.taxRate ?? dcLine?.taxRate ?? soLine?.tax ?? dcLine?.tax ?? 0
         );
@@ -202,7 +291,7 @@ const SalesInvoices = () => {
           qualityName,
           widthInches,
           qtyRolls: 1,
-          billedLengthMeters: dcLine.shippedLengthMeters,
+          billedLengthMeters: billedMeters,
           ratePerRoll,
           discountLine: 0,
           taxRate,
@@ -252,6 +341,7 @@ const SalesInvoices = () => {
 
   const handleAdd = () => {
     setSelectedInvoice(null);
+    setShowRollDetails(false);
     reset({
       deliveryChallanId: "",
       siDate: new Date(),
@@ -264,11 +354,13 @@ const SalesInvoices = () => {
 
   const handleView = (row) => {
     setSelectedInvoice(row);
+    setShowRollDetails(false);
+    ensureDeliveryChallanInOptions(row.deliveryChallanId);
     reset({
       deliveryChallanId: normalizeId(row.deliveryChallanId),
       siDate: new Date(row.siDate),
       dueDate: new Date(row.dueDate),
-      lines: row.lines || [],
+      lines: ensureInvoiceLinesHaveRatePerRoll(row.lines || []),
       notes: row.notes || "",
     });
     setOpenDialog(true);
@@ -333,6 +425,9 @@ const SalesInvoices = () => {
       const invoiceData = {
         ...data,
         ...totals,
+        lines: (data.lines || []).map((l) =>
+          normalizeInvoiceRollLineForSave(l)
+        ),
         customerId: selectedDC.customerId,
         customerName: selectedDC.customerName,
         salesOrderId: selectedDC.salesOrderId,
@@ -460,7 +555,7 @@ const SalesInvoices = () => {
               : "Create Sales Invoice"}
           </DialogTitle>
           <DialogContent>
-            <Grid container spacing={2} sx={{ mb: 2 }}>
+            <Grid container spacing={2} sx={{ mt:2, mb: 2 }}>
               <Grid item xs={12} md={4}>
                 <Controller
                   name="deliveryChallanId"
@@ -478,7 +573,7 @@ const SalesInvoices = () => {
                       renderInput={(params) => (
                         <TextField
                           {...params}
-                          label="Select Customer"
+                          label="Select Delivery Challan"
                           error={!!errors.deliveryChallanId}
                           helperText={errors.deliveryChallanId?.message}
                         />
@@ -520,43 +615,55 @@ const SalesInvoices = () => {
             )}
 
             <Typography variant="h6" gutterBottom>
-              Invoice Lines
+              Order lines
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              One row per sales order line: rolls and meters are totals for that
+              line.
             </Typography>
 
-            <TableContainer component={Paper}>
+            <TableContainer component={Paper} sx={{ mb: 2 }}>
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell>Roll#</TableCell>
                     <TableCell>Category</TableCell>
                     <TableCell>GSM</TableCell>
                     <TableCell>Quality</TableCell>
-                    <TableCell>Width"</TableCell>
-                    <TableCell>Length(m)</TableCell>
-                    <TableCell>Rate/Roll</TableCell>
-                    <TableCell>Tax%</TableCell>
-                    <TableCell>Amount</TableCell>
+                    <TableCell>Width&quot;</TableCell>
+                    <TableCell align="right">Rolls</TableCell>
+                    <TableCell align="right">Meters</TableCell>
+                    <TableCell align="right">Tax%</TableCell>
+                    <TableCell align="right">Subtotal</TableCell>
+                    <TableCell align="right">Tax</TableCell>
+                    <TableCell align="right">Amount</TableCell>
+                    <TableCell align="right">COGS</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {watchLines.map((line, index) => {
-                    const rate = toNumber(line.ratePerRoll);
-                    const tax = toNumber(line.taxRate);
-                    const lineAmount = rate * (1 + tax / 100);
-
+                  {groupedOrderLines.map((row) => {
                     return (
-                      <TableRow key={index}>
-                        <TableCell>{line.rollNumber}</TableCell>
-                        <TableCell>{line.categoryName}</TableCell>
-                        <TableCell>{line.gsm}</TableCell>
-                        <TableCell>{line.qualityName}</TableCell>
-                        <TableCell>{formatInches(line.widthInches)}</TableCell>
-                        <TableCell>{line.billedLengthMeters}</TableCell>
-                        <TableCell>
-                          {formatCurrency(line.ratePerRoll)}
+                      <TableRow key={row.key}>
+                        <TableCell>{row.categoryName}</TableCell>
+                        <TableCell>{row.gsm}</TableCell>
+                        <TableCell>{row.qualityName}</TableCell>
+                        <TableCell>{formatInches(row.widthInches)}</TableCell>
+                        <TableCell align="right">{row.totalRolls}</TableCell>
+                        <TableCell align="right">
+                          {row.totalMeters.toFixed(2)}
                         </TableCell>
-                        <TableCell>{line.taxRate}%</TableCell>
-                        <TableCell>{formatCurrency(lineAmount)}</TableCell>
+                        <TableCell align="right">{row.taxRate}%</TableCell>
+                        <TableCell align="right">
+                          {formatCurrency(row.lineSubtotal)}
+                        </TableCell>
+                        <TableCell align="right">
+                          {formatCurrency(row.lineTax)}
+                        </TableCell>
+                        <TableCell align="right">
+                          {formatCurrency(row.lineTotal)}
+                        </TableCell>
+                        <TableCell align="right">
+                          {formatCurrency(row.lineCogs)}
+                        </TableCell>
                       </TableRow>
                     );
                   })}
@@ -564,50 +671,126 @@ const SalesInvoices = () => {
               </Table>
             </TableContainer>
 
-            <Divider sx={{ my: 2 }} />
-
-            <Grid container spacing={2}>
-              <Grid item xs={12} md={8}>
-                <Controller
-                  name="notes"
-                  control={control}
-                  render={({ field }) => (
-                    <TextField
-                      {...field}
-                      fullWidth
-                      label="Notes"
-                      multiline
-                      rows={3}
-                    />
-                  )}
+            <FormControlLabel
+              sx={{ mb: 1 }}
+              control={
+                <Checkbox
+                  checked={showRollDetails}
+                  onChange={(e) => setShowRollDetails(e.target.checked)}
                 />
-              </Grid>
-              <Grid item xs={12} md={4}>
-                <Paper sx={{ p: 2 }}>
-                  <Typography variant="body2" gutterBottom>
-                    Subtotal: {formatCurrency(totals.subtotal)}
+              }
+              label="Show roll details"
+            />
+
+            {showRollDetails && (
+              <TableContainer component={Paper} sx={{ mb: 2 }}>
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Roll#</TableCell>
+                      <TableCell>Category</TableCell>
+                      <TableCell>GSM</TableCell>
+                      <TableCell>Quality</TableCell>
+                      <TableCell>Width&quot;</TableCell>
+                      <TableCell align="right">Meters</TableCell>
+                      <TableCell align="right">Tax%</TableCell>
+                      <TableCell align="right">Amount</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {(watchLines || []).map((line, idx) => {
+                      const { lineTotal: total } =
+                        computeInvoiceRollLineAmounts(line);
+                      return (
+                        <TableRow key={`${normalizeId(line.rollId) || idx}`}>
+                          <TableCell>{line.rollNumber}</TableCell>
+                          <TableCell>{line.categoryName}</TableCell>
+                          <TableCell>{line.gsm}</TableCell>
+                          <TableCell>{line.qualityName}</TableCell>
+                          <TableCell>{formatInches(line.widthInches)}</TableCell>
+                          <TableCell align="right">
+                            {toNumber(line.billedLengthMeters).toFixed(2)}
+                          </TableCell>
+                          <TableCell align="right">{toNumber(line.taxRate)}%</TableCell>
+                          <TableCell align="right">{formatCurrency(total)}</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            )}
+
+            <Controller
+              name="notes"
+              control={control}
+              render={({ field }) => (
+                <TextField
+                  {...field}
+                  fullWidth
+                  label="Notes"
+                  multiline
+                  rows={3}
+                  sx={{ mb: 2 }}
+                />
+              )}
+            />
+
+            <Paper
+              variant="outlined"
+              sx={{
+                p: 2,
+                bgcolor: "grey.50",
+                borderRadius: 1,
+              }}
+            >
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                Invoice totals
+              </Typography>
+              <Grid container spacing={2}>
+                <Grid item xs={6} sm={4} md={2}>
+                  <Typography variant="caption" color="text.secondary">
+                    Subtotal
                   </Typography>
-                  <Typography variant="body2" gutterBottom>
-                    Tax: {formatCurrency(totals.taxAmount)}
+                  <Typography variant="body1" fontWeight={600}>
+                    {formatCurrency(totals.subtotal)}
                   </Typography>
-                  <Divider sx={{ my: 1 }} />
-                  <Typography variant="h6" gutterBottom>
-                    Total: {formatCurrency(totals.total)}
+                </Grid>
+                <Grid item xs={6} sm={4} md={2}>
+                  <Typography variant="caption" color="text.secondary">
+                    Tax
                   </Typography>
-                  <Typography
-                    variant="body2"
-                    color="text.secondary"
-                    gutterBottom
-                  >
-                    COGS: {formatCurrency(totals.totalCOGS)}
+                  <Typography variant="body1" fontWeight={600}>
+                    {formatCurrency(totals.taxAmount)}
                   </Typography>
-                  <Typography variant="body2" color="success.main">
-                    Gross Margin: {formatCurrency(totals.grossMargin)} (
+                </Grid>
+                <Grid item xs={6} sm={4} md={2}>
+                  <Typography variant="caption" color="text.secondary">
+                    Total
+                  </Typography>
+                  <Typography variant="h6" component="div">
+                    {formatCurrency(totals.total)}
+                  </Typography>
+                </Grid>
+                <Grid item xs={6} sm={4} md={2}>
+                  <Typography variant="caption" color="text.secondary">
+                    COGS
+                  </Typography>
+                  <Typography variant="body1" fontWeight={600}>
+                    {formatCurrency(totals.totalCOGS)}
+                  </Typography>
+                </Grid>
+                <Grid item xs={6} sm={4} md={4}>
+                  <Typography variant="caption" color="text.secondary">
+                    Gross margin
+                  </Typography>
+                  <Typography variant="body1" color="success.main" fontWeight={600}>
+                    {formatCurrency(totals.grossMargin)} (
                     {totals.marginPercent.toFixed(1)}%)
                   </Typography>
-                </Paper>
+                </Grid>
               </Grid>
-            </Grid>
+            </Paper>
           </DialogContent>
           <DialogActions>
             <Button onClick={() => setOpenDialog(false)}>Cancel</Button>
@@ -694,7 +877,10 @@ const SalesInvoices = () => {
               </Typography>
               {selectedInvoice.lines?.map((line, index) => {
                 const lineMargin = line.ratePerRoll - line.cogsAmount;
-                const marginPercent = (lineMargin / line.ratePerRoll) * 100;
+                const marginPercent =
+                  toNumber(line.ratePerRoll) > 0
+                    ? (lineMargin / toNumber(line.ratePerRoll)) * 100
+                    : 0;
 
                 return (
                   <Box

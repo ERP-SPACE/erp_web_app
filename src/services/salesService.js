@@ -22,6 +22,10 @@ const salesService = {
     return await api.post(`/sales-orders/${id}/confirm`);
   },
 
+  recheckSalesOrderCredit: async (id) => {
+    return await api.post(`/sales-orders/${id}/recheck-credit`);
+  },
+
   holdSalesOrder: async (id, reason) => {
     return await api.post(`/sales-orders/${id}/hold`, { reason });
   },
@@ -59,6 +63,10 @@ const salesService = {
 
   updateDeliveryChallan: async (id, data) => {
     return await api.put(`/delivery-challans/${id}`, data);
+  },
+
+  postDeliveryChallan: async (id) => {
+    return await api.post(`/delivery-challans/${id}/post`);
   },
 
   closeDeliveryChallan: async (id) => {
