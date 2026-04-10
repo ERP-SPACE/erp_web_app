@@ -62,9 +62,9 @@ const Suppliers = () => {
   const [tabValue, setTabValue] = useState(0);
 
   // Base Rate states
-  const [skus, setSkus] = useState([]);
+  const [products, setProducts] = useState([]);
   const [supplierBaseRates, setSupplierBaseRates] = useState([]);
-  const [selectedSku, setSelectedSku] = useState(null);
+  const [selectedProduct, setSelectedProduct] = useState(null);
   const [baseRateValue, setBaseRateValue] = useState("");
   const [loadingBaseRates, setLoadingBaseRates] = useState(false);
   const [baseRateDeleteId, setBaseRateDeleteId] = useState(null);
@@ -123,7 +123,7 @@ const Suppliers = () => {
 
   useEffect(() => {
     fetchSuppliers();
-    fetchSKUs();
+    fetchProducts();
   }, []);
 
   const fetchSuppliers = async () => {
@@ -139,12 +139,12 @@ const Suppliers = () => {
     }
   };
 
-  const fetchSKUs = async () => {
+  const fetchProducts = async () => {
     try {
-      const response = await masterService.getSKUs({ limit: 1000 });
-      setSkus(response.skus || []);
+      const response = await masterService.getProducts({ limit: 2000 });
+      setProducts(response.products || []);
     } catch (error) {
-      console.error("Failed to fetch SKUs:", error);
+      console.error("Failed to fetch products:", error);
     }
   };
 
@@ -203,13 +203,13 @@ const Suppliers = () => {
     [showNotification]
   );
 
-  // Filter out SKUs that already have rates configured
-  const availableSkus = useMemo(() => {
-    const existingSkuIds = new Set(
-      supplierBaseRates.map((rate) => rate.skuId?._id).filter(Boolean)
+  // Filter out Products that already have rates configured
+  const availableProducts = useMemo(() => {
+    const existingProductIds = new Set(
+      supplierBaseRates.map((rate) => rate.productId?._id).filter(Boolean)
     );
-    return skus.filter((sku) => !existingSkuIds.has(sku._id));
-  }, [skus, supplierBaseRates]);
+    return products.filter((product) => !existingProductIds.has(product._id));
+  }, [products, supplierBaseRates]);
 
   // Check if a primary contact already exists
   const hasPrimaryContact = useMemo(() => {
@@ -222,7 +222,7 @@ const Suppliers = () => {
     setSupplierBaseRates([]);
     setRateHistory([]);
     setContactPersons([]);
-    setSelectedSku(null);
+    setSelectedProduct(null);
     setBaseRateValue("");
     setNewContactPerson(initialContactPerson);
 
@@ -252,7 +252,7 @@ const Suppliers = () => {
   const handleEdit = (row) => {
     setSelectedSupplier(row);
     setTabValue(0);
-    setSelectedSku(null);
+    setSelectedProduct(null);
     setBaseRateValue("");
     setNewContactPerson(initialContactPerson);
     reset({
@@ -355,8 +355,8 @@ const Suppliers = () => {
       return;
     }
 
-    if (!selectedSku) {
-      showNotification("Please select a SKU", "warning");
+    if (!selectedProduct) {
+      showNotification("Please select a product", "warning");
       return;
     }
 
@@ -368,11 +368,11 @@ const Suppliers = () => {
     try {
       await masterService.upsertSupplierBaseRate(
         selectedSupplier._id,
-        selectedSku._id,
+        selectedProduct._id,
         parseFloat(baseRateValue)
       );
       showNotification("Base rate added successfully", "success");
-      setSelectedSku(null);
+      setSelectedProduct(null);
       setBaseRateValue("");
       fetchSupplierBaseRates(selectedSupplier._id);
     } catch (error) {
@@ -427,7 +427,7 @@ const Suppliers = () => {
     try {
       await masterService.upsertSupplierBaseRate(
         selectedSupplier._id,
-        editingRate.skuId._id,
+        editingRate.productId._id,
         newRate
       );
       showNotification("Base rate updated successfully", "success");
@@ -600,7 +600,7 @@ const Suppliers = () => {
               <Tabs value={tabValue} onChange={handleTabChange}>
                 <Tab label="Details" />
                 <Tab label="Contact Persons" disabled={!selectedSupplier} />
-                <Tab label="Base Rates" disabled={!selectedSupplier} />
+                <Tab label="Rates (Default)" disabled={!selectedSupplier} />
                 <Tab label="Rate History" disabled={!selectedSupplier} />
               </Tabs>
             </Box>
@@ -1055,32 +1055,30 @@ const Suppliers = () => {
                   {/* Add Base Rate Form */}
                   <Paper sx={{ p: 2, mb: 3, bgcolor: "grey.50" }}>
                     <Typography variant="subtitle2" gutterBottom>
-                      Add New Base Rate
+                      Add New Base Rate (44" Benchmark)
                     </Typography>
                     <Grid container spacing={2} alignItems="center">
                       <Grid item xs={12} sm={6}>
                         <Autocomplete
-                          value={selectedSku}
+                          value={selectedProduct}
                           onChange={(event, newValue) => {
-                            setSelectedSku(newValue);
+                            setSelectedProduct(newValue);
                             setBaseRateValue("");
                           }}
-                          options={availableSkus}
-                          getOptionLabel={(option) => option.skuCode || ""}
+                          options={availableProducts}
+                          getOptionLabel={(option) =>
+                            option.productCode || option.productAlias || ""
+                          }
                           filterOptions={(options, { inputValue }) => {
                             const search = inputValue.toLowerCase().trim();
                             if (!search) return options;
                             return options.filter((option) => {
-                              const product = option.productId;
                               const searchableFields = [
-                                option.skuCode,
-                                option.skuAlias,
-                                String(option.widthInches),
-                                product?.productCode,
-                                product?.productAlias,
-                                product?.categoryId?.name,
-                                product?.gsmId?.name,
-                                product?.qualityId?.name,
+                                option.productCode,
+                                option.productAlias,
+                                option.categoryId?.name,
+                                option.gsmId?.name,
+                                option.qualityId?.name,
                               ];
                               return searchableFields.some(
                                 (field) =>
@@ -1090,14 +1088,14 @@ const Suppliers = () => {
                           }}
                           renderOption={(props, option) => (
                             <li {...props} key={option._id}>
-                              {option.skuCode}
+                              {option.productCode || option.productAlias || option._id}
                             </li>
                           )}
                           renderInput={(params) => (
                             <TextField
                               {...params}
-                              label="Select SKU"
-                              placeholder="Search by SKU, width, category..."
+                              label="Select Product"
+                              placeholder="Search by product code/alias, category..."
                               size="small"
                             />
                           )}
@@ -1105,9 +1103,9 @@ const Suppliers = () => {
                             option._id === value._id
                           }
                           noOptionsText={
-                            supplierBaseRates.length === skus.length
-                              ? "All SKUs have rates configured"
-                              : "No matching SKUs"
+                            supplierBaseRates.length === products.length
+                              ? "All products have rates configured"
+                              : "No matching products"
                           }
                         />
                       </Grid>
@@ -1135,7 +1133,7 @@ const Suppliers = () => {
                           variant="contained"
                           startIcon={<AddIcon />}
                           onClick={handleAddBaseRate}
-                          disabled={!selectedSku || !baseRateValue}
+                          disabled={!selectedProduct || !baseRateValue}
                         >
                           Add
                         </Button>
@@ -1165,7 +1163,6 @@ const Suppliers = () => {
                       <Table size="small" stickyHeader>
                         <TableHead>
                           <TableRow>
-                            <TableCell>SKU Code</TableCell>
                             <TableCell>Product</TableCell>
 
                             <TableCell align="right">Rate (₹)</TableCell>
@@ -1174,13 +1171,13 @@ const Suppliers = () => {
                         </TableHead>
                         <TableBody>
                           {supplierBaseRates.map((rate) => {
-                            const sku = rate.skuId;
-                            const product = sku?.productId;
+                            const product = rate.productId;
                             return (
                               <TableRow key={rate._id} hover>
-                                <TableCell>{sku?.skuCode || "-"}</TableCell>
                                 <TableCell>
-                                  {product?.productCode || "-"}
+                                  {product?.productCode ||
+                                    product?.productAlias ||
+                                    "-"}
                                 </TableCell>
 
                                 <TableCell align="right">
@@ -1247,7 +1244,6 @@ const Suppliers = () => {
                         <TableHead>
                           <TableRow>
                             <TableCell>Date & Time</TableCell>
-                            <TableCell>SKU Code</TableCell>
                             <TableCell>Product</TableCell>
                             <TableCell align="right">
                               Previous Rate (₹)
@@ -1260,16 +1256,17 @@ const Suppliers = () => {
                         <TableBody>
                           {rateHistory.map((history) => {
                             const baseRate = history.baseRateId;
-                            const sku = baseRate?.skuId;
-                            const product = sku?.productId;
+                              const product =
+                                baseRate?.productId || history?.productId || null;
                             return (
                               <TableRow key={history._id} hover>
                                 <TableCell>
                                   {formatDateTime(history.createdAt)}
                                 </TableCell>
-                                <TableCell>{sku?.skuCode || "-"}</TableCell>
                                 <TableCell>
-                                  {product?.productCode || "-"}
+                                    {product?.productCode ||
+                                      product?.productAlias ||
+                                      "-"}
                                 </TableCell>
                                 <TableCell align="right">
                                   {history?.previousRate?.toLocaleString(
@@ -1314,12 +1311,11 @@ const Suppliers = () => {
           {editingRate && (
             <Box sx={{ pt: 1 }}>
               <Typography variant="body2" color="text.secondary" gutterBottom>
-                SKU: <strong>{editingRate.skuId?.skuCode}</strong>
-              </Typography>
-              <Typography variant="body2" color="text.secondary" gutterBottom>
                 Product:{" "}
                 <strong>
-                  {editingRate.skuId?.productId?.productCode || "-"}
+                  {editingRate.productId?.productCode ||
+                    editingRate.productId?.productAlias ||
+                    "-"}
                 </strong>
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>

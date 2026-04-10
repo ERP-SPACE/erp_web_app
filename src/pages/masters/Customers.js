@@ -84,10 +84,10 @@ const Customers = () => {
   });
   const [creatingGroup, setCreatingGroup] = useState(false);
 
-  // Per-SKU pricing state
-  const [skus, setSkus] = useState([]);
+  // Per-Product pricing state
+  const [products, setProducts] = useState([]);
   const [customerBaseRates, setCustomerBaseRates] = useState([]);
-  const [selectedSku, setSelectedSku] = useState(null);
+  const [selectedProduct, setSelectedProduct] = useState(null);
   const [baseRateValue, setBaseRateValue] = useState("");
   const [loadingBaseRates, setLoadingBaseRates] = useState(false);
   const [baseRateDeleteId, setBaseRateDeleteId] = useState(null);
@@ -96,6 +96,19 @@ const Customers = () => {
   const [editingRate, setEditingRate] = useState(null);
   const [editRateValue, setEditRateValue] = useState("");
   const [rateHistorySku, setRateHistorySku] = useState(null);
+
+  // Agent commission (for this customer) UI state
+  const [commissionLoading, setCommissionLoading] = useState(false);
+  const [commissionAgent, setCommissionAgent] = useState(null);
+  const [commissionEntry, setCommissionEntry] = useState(null);
+  const [commissionForm, setCommissionForm] = useState({
+    commissionType: "percentage",
+    amountPerMeter: "",
+    percentage: 5,
+    applyByDefault: true,
+    effectiveFrom: new Date().toISOString().split("T")[0],
+    notes: "",
+  });
   const agentOptions = [
     { value: "", label: "Unassigned" },
     ...agents.map((agent) => ({
@@ -108,6 +121,13 @@ const Customers = () => {
     { value: "OVER_DUE", label: "Days Over Due" },
     { value: "BOTH", label: "Any Breach (Limit or Days)" },
   ];
+
+  const normalizeId = (value) => {
+    if (!value) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "object") return value._id || value.id || "";
+    return String(value);
+  };
 
   const {
     control,
@@ -149,7 +169,6 @@ const Customers = () => {
         autoBlock: false,
         blockRule: "BOTH",
       },
-      baseRate44: 0,
       active: true,
     },
   });
@@ -163,8 +182,69 @@ const Customers = () => {
     fetchCustomers();
     fetchCustomerGroups();
     fetchAgents();
-    fetchSKUs();
+    fetchProducts();
   }, []);
+
+
+  const loadCustomerCommissionFromAgent = useCallback(
+    async (agentId, customerId) => {
+      const resolvedAgentId = normalizeId(agentId);
+      const resolvedCustomerId = normalizeId(customerId);
+
+      if (!resolvedAgentId || !resolvedCustomerId) {
+        setCommissionAgent(null);
+        setCommissionEntry(null);
+        setCommissionForm((prev) => ({
+          ...prev,
+          commissionType: "percentage",
+          amountPerMeter: "",
+          percentage: 5,
+          applyByDefault: true,
+          effectiveFrom: new Date().toISOString().split("T")[0],
+          notes: "",
+        }));
+        return;
+      }
+
+      setCommissionLoading(true);
+      try {
+        const agent = await masterService.getAgent(resolvedAgentId);
+        const agentDoc = agent?.data || agent;
+        setCommissionAgent(agentDoc);
+
+        const commissions = Array.isArray(agentDoc?.partyCommissions)
+          ? agentDoc.partyCommissions
+          : [];
+        const entry =
+          commissions.find(
+            (c) => normalizeId(c?.customer) === resolvedCustomerId
+          ) || null;
+        setCommissionEntry(entry);
+
+        setCommissionForm({
+          commissionType: entry?.commissionType || "percentage",
+          amountPerMeter:
+            entry?.commissionType === "per_meter"
+              ? String(entry?.amountPerMeter ?? "")
+              : "",
+          percentage:
+            entry?.commissionType === "percentage"
+              ? Number(entry?.percentage ?? 0)
+              : 0,
+          applyByDefault:
+            entry?.applyByDefault === undefined ? true : Boolean(entry.applyByDefault),
+          effectiveFrom: new Date().toISOString().split("T")[0],
+          notes: entry?.notes || "",
+        });
+      } catch (error) {
+        setCommissionAgent(null);
+        setCommissionEntry(null);
+      } finally {
+        setCommissionLoading(false);
+      }
+    },
+    []
+  );
 
   const fetchCustomers = async () => {
     setLoading(true);
@@ -199,12 +279,12 @@ const Customers = () => {
     }
   };
 
-  const fetchSKUs = async () => {
+  const fetchProducts = async () => {
     try {
-      const response = await masterService.getSKUs({ limit: 1000 });
-      setSkus(response.skus || []);
+      const response = await masterService.getProducts({ limit: 2000 });
+      setProducts(response.products || []);
     } catch (error) {
-      console.error("Failed to fetch SKUs:", error);
+      console.error("Failed to fetch products:", error);
     }
   };
 
@@ -226,20 +306,30 @@ const Customers = () => {
     [showNotification]
   );
 
-  const availableSkus = useMemo(() => {
-    const existingSkuIds = new Set(
-      customerBaseRates.map((rate) => rate.skuId?._id).filter(Boolean)
+  const availableProducts = useMemo(() => {
+    const existingProductIds = new Set(
+      customerBaseRates
+        .map((rate) =>
+          rate?.productId?._id ||
+          rate?.productId ||
+          rate?.skuId?.productId?._id ||
+          rate?.skuId?.productId
+        )
+        .filter(Boolean)
+        .map(String)
     );
-    return skus.filter((sku) => !existingSkuIds.has(sku._id));
-  }, [skus, customerBaseRates]);
+    return products.filter(
+      (product) => !existingProductIds.has(String(product._id))
+    );
+  }, [products, customerBaseRates]);
 
   const handleAddBaseRate = async () => {
     if (!selectedCustomer) {
       showNotification("Please save the customer first", "warning");
       return;
     }
-    if (!selectedSku) {
-      showNotification("Please select a SKU", "warning");
+    if (!selectedProduct) {
+      showNotification("Please select a product", "warning");
       return;
     }
     if (!baseRateValue || isNaN(parseFloat(baseRateValue))) {
@@ -248,11 +338,11 @@ const Customers = () => {
     }
     try {
       await masterService.setCustomerRate(selectedCustomer._id, {
-        skuId: selectedSku._id,
+        productId: selectedProduct._id,
         baseRate: parseFloat(baseRateValue),
       });
       showNotification("Rate added successfully", "success");
-      setSelectedSku(null);
+      setSelectedProduct(null);
       setBaseRateValue("");
       fetchCustomerBaseRates(selectedCustomer._id);
     } catch (error) {
@@ -260,8 +350,8 @@ const Customers = () => {
     }
   };
 
-  const handleDeleteBaseRate = (skuId) => {
-    setBaseRateDeleteId(skuId);
+  const handleDeleteBaseRate = (productId) => {
+    setBaseRateDeleteId(productId);
     setOpenBaseRateConfirm(true);
   };
 
@@ -297,8 +387,14 @@ const Customers = () => {
       return;
     }
     try {
+      const productId =
+        editingRate?.productId?._id ||
+        editingRate?.productId ||
+        editingRate?.skuId?.productId?._id ||
+        editingRate?.skuId?.productId ||
+        null;
       await masterService.setCustomerRate(selectedCustomer._id, {
-        skuId: editingRate.skuId._id,
+        ...(productId ? { productId } : { skuId: editingRate.skuId._id }),
         baseRate: newRate,
       });
       showNotification("Rate updated successfully", "success");
@@ -364,12 +460,13 @@ const Customers = () => {
     }
   };
 
-  const handleAgentChange = async (agentId) => {
-    if (!agentId || !selectedCustomer) return;
+  const handleAgentChange = async (agentId, customerIdOverride = null) => {
+    const customerId = customerIdOverride || selectedCustomer?._id || null;
+    if (!agentId || !customerId) return;
 
     try {
       const commissionPayload = {
-        customer: selectedCustomer._id,
+        customer: customerId,
         commissionType: "percentage",
         percentage: 5,
         applyByDefault: true,
@@ -379,11 +476,68 @@ const Customers = () => {
 
       await masterService.upsertAgentPartyCommission(agentId, commissionPayload);
       showNotification("Default commission created for the selected agent", "success");
+      await loadCustomerCommissionFromAgent(agentId, customerId);
     } catch (error) {
       showNotification(
         error.message || "Failed to create default commission",
         "error"
       );
+    }
+  };
+
+  const watchAgentId = watch("agentId");
+
+  useEffect(() => {
+    if (!openDialog) return;
+    if (!watchAgentId || !selectedCustomer?._id) return;
+    loadCustomerCommissionFromAgent(watchAgentId, selectedCustomer._id);
+  }, [openDialog, watchAgentId, selectedCustomer?._id, loadCustomerCommissionFromAgent]);
+
+  const handleSaveCustomerCommission = async () => {
+    const agentId = normalizeId(watchAgentId);
+    const customerId = normalizeId(selectedCustomer?._id);
+    if (!agentId || !customerId) return;
+
+    const payload = {
+      customer: customerId,
+      commissionType: commissionForm.commissionType,
+      applyByDefault: Boolean(commissionForm.applyByDefault),
+      effectiveFrom: commissionForm.effectiveFrom,
+      notes: commissionForm.notes,
+      amountPerMeter:
+        commissionForm.commissionType === "per_meter"
+          ? Number(commissionForm.amountPerMeter || 0)
+          : undefined,
+      percentage:
+        commissionForm.commissionType === "percentage"
+          ? Number(commissionForm.percentage || 0)
+          : undefined,
+    };
+
+    try {
+      await masterService.upsertAgentPartyCommission(agentId, payload);
+      showNotification("Commission updated for this customer", "success");
+      await loadCustomerCommissionFromAgent(agentId, customerId);
+    } catch (error) {
+      showNotification(error.message || "Failed to update commission", "error");
+    }
+  };
+
+  const handleRemoveCustomerCommission = async () => {
+    const agentId = normalizeId(watchAgentId);
+    const customerId = normalizeId(selectedCustomer?._id);
+    if (!agentId || !customerId) return;
+
+    try {
+      await masterService.removeAgentPartyCommission(
+        agentId,
+        customerId,
+        "Removed from customer modal"
+      );
+      showNotification("Commission removed for this customer", "success");
+      await loadCustomerCommissionFromAgent(agentId, customerId);
+    } catch (error) {
+      showNotification(error.message || "Failed to remove commission", "error");
     }
   };
 
@@ -421,11 +575,10 @@ const Customers = () => {
         autoBlock: false,
         blockRule: "BOTH",
       },
-      baseRate44: 0,
       active: true,
     });
     setCustomerBaseRates([]);
-    setSelectedSku(null);
+    setSelectedProduct(null);
     setBaseRateValue("");
     setTabValue(0);
     setOpenDialog(true);
@@ -471,11 +624,10 @@ const Customers = () => {
         autoBlock: false,
         blockRule: "BOTH",
       },
-      baseRate44: row.baseRate44 || 0,
       active: row.active !== undefined ? row.active : true,
     });
     setCustomerBaseRates([]);
-    setSelectedSku(null);
+    setSelectedProduct(null);
     setBaseRateValue("");
     setTabValue(0);
     setOpenDialog(true);
@@ -534,15 +686,15 @@ const Customers = () => {
     }
   };
 
-  const handleViewRateHistory = async (skuId = null, sku = null) => {
+  const handleViewRateHistory = async (productId = null, product = null) => {
     if (!selectedCustomer?._id) return;
-    setRateHistorySku(sku);
+    setRateHistorySku(product);
     setLoadingRateHistory(true);
     setRateHistoryDialog(true);
     try {
       const history = await masterService.getCustomerRateHistory(
         selectedCustomer._id,
-        skuId
+        productId
       );
       setRateHistory(history);
     } catch (error) {
@@ -622,15 +774,6 @@ const Customers = () => {
         }
       }
 
-      // Convert baseRate44 if it exists
-      if (
-        sanitizedData.baseRate44 &&
-        typeof sanitizedData.baseRate44 === "string"
-      ) {
-        sanitizedData.baseRate44 =
-          parseFloat(sanitizedData.baseRate44.replace(/[₹,\s]/g, "")) || 0;
-      }
-
       const normalizedGroups = Array.isArray(sanitizedData.customerGroupIds)
         ? sanitizedData.customerGroupIds.filter(Boolean)
         : [];
@@ -654,6 +797,11 @@ const Customers = () => {
           "success"
         );
         if (newCustomerId) {
+          // If agent was selected during creation, ensure commission is created
+          // after the customer exists.
+          if (sanitizedData.agentId) {
+            await handleAgentChange(sanitizedData.agentId, newCustomerId);
+          }
           setSelectedCustomer(created);
           setTabValue(3);
           fetchCustomers();
@@ -669,9 +817,20 @@ const Customers = () => {
   };
 
   const columns = [
-    { field: "customerCode", headerName: "Code" },
+    { field: "customerCode", headerName: "Customer Code" },
     { field: "companyName", headerName: "Customer Name" },
-    { field: "state", headerName: "State" },
+    // { field: "state", headerName: "Location" },
+    {
+      field: "city",
+      headerName: "Location",
+      renderCell: (params) => {
+        const row = params.row;
+        const parts = [];
+        if (row.address.billing.city) parts.push(row.address.billing.city);
+        if (row.state) parts.push(row.state);
+        return parts.length > 0 ? parts.join(", ") : "-";
+      },
+    },
     {
       field: "customerGroups",
       headerName: "Customer Groups",
@@ -730,6 +889,16 @@ const Customers = () => {
       renderCell: (params) => formatCurrency(params.value?.creditLimit || 0),
     },
     {
+      field: "creditDays",
+      headerName: "Credit Days",
+      renderCell: (params) => params.row.creditPolicy?.creditDays ?? 0,
+    },
+    {
+      field: "graceDays",
+      headerName: "Grace Days",
+      renderCell: (params) => params.row.creditPolicy?.graceDays ?? 0,
+    },
+    {
       field: "isBlocked",
       headerName: "Status",
       renderCell: (params) => {
@@ -785,14 +954,15 @@ const Customers = () => {
       >
         <form onSubmit={handleSubmit(onSubmit)}>
           <DialogTitle>
-            {selectedCustomer ? "Edit Customer" : "Add Customer"}
+            {selectedCustomer ? "Edit Customer" : "Add New Customer"}
           </DialogTitle>
           <DialogContent>
             <Tabs value={tabValue} onChange={(e, v) => setTabValue(v)}>
               <Tab label="Basic Info" />
               <Tab label="Contact Details" />
               <Tab label="Credit Policy" />
-              <Tab label="Pricing" />
+              <Tab label="Rates (Default)" />
+              <Tab label="Commission" />
             </Tabs>
 
             <TabPanel value={tabValue} index={0}>
@@ -1307,6 +1477,154 @@ const Customers = () => {
               </Grid>
             </TabPanel>
 
+            <TabPanel value={tabValue} index={4}>
+              {!selectedCustomer?._id ? (
+                <Typography color="text.secondary" sx={{ textAlign: "center", py: 4 }}>
+                  Please save the customer first to manage commission.
+                </Typography>
+              ) : !watchAgentId ? (
+                <Typography color="text.secondary" sx={{ textAlign: "center", py: 4 }}>
+                  Please select an agent first to manage commission.
+                </Typography>
+              ) : (
+                <Paper sx={{ p: 2, bgcolor: "grey.50" }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Commission (for this customer)
+                  </Typography>
+
+                  {commissionLoading ? (
+                    <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                      <CircularProgress size={18} />
+                      <Typography variant="body2" color="text.secondary">
+                        Loading commission…
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <Box sx={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+                        <FormControl size="small" sx={{ minWidth: 220 }}>
+                          <InputLabel id="commission-type-label">
+                            Commission Type
+                          </InputLabel>
+                          <Select
+                            labelId="commission-type-label"
+                            label="Commission Type"
+                            value={commissionForm.commissionType}
+                            onChange={(e) =>
+                              setCommissionForm((prev) => ({
+                                ...prev,
+                                commissionType: e.target.value,
+                                amountPerMeter: "",
+                                percentage: 0,
+                              }))
+                            }
+                          >
+                            <MenuItem value="per_meter">Per Meter</MenuItem>
+                            <MenuItem value="percentage">Percentage</MenuItem>
+                          </Select>
+                        </FormControl>
+
+                        {commissionForm.commissionType === "per_meter" ? (
+                          <TextField
+                            size="small"
+                            label="Amount / Meter (₹)"
+                            type="number"
+                            value={commissionForm.amountPerMeter}
+                            onChange={(e) =>
+                              setCommissionForm((prev) => ({
+                                ...prev,
+                                amountPerMeter: e.target.value,
+                              }))
+                            }
+                            inputProps={{ min: 0, step: 0.01 }}
+                          />
+                        ) : (
+                          <TextField
+                            size="small"
+                            label="Percentage (%)"
+                            type="number"
+                            value={commissionForm.percentage}
+                            onChange={(e) =>
+                              setCommissionForm((prev) => ({
+                                ...prev,
+                                percentage: e.target.value,
+                              }))
+                            }
+                            inputProps={{ min: 0, step: 0.01 }}
+                          />
+                        )}
+
+                        <TextField
+                          size="small"
+                          label="Effective From"
+                          type="date"
+                          value={commissionForm.effectiveFrom}
+                          onChange={(e) =>
+                            setCommissionForm((prev) => ({
+                              ...prev,
+                              effectiveFrom: e.target.value,
+                            }))
+                          }
+                          InputLabelProps={{ shrink: true }}
+                        />
+                      </Box>
+
+                      <FormControlLabel
+                        control={
+                          <Switch
+                            checked={Boolean(commissionForm.applyByDefault)}
+                            onChange={(e) =>
+                              setCommissionForm((prev) => ({
+                                ...prev,
+                                applyByDefault: e.target.checked,
+                              }))
+                            }
+                          />
+                        }
+                        label="Apply by default"
+                      />
+
+                      <TextField
+                        size="small"
+                        label="Notes"
+                        value={commissionForm.notes}
+                        onChange={(e) =>
+                          setCommissionForm((prev) => ({
+                            ...prev,
+                            notes: e.target.value,
+                          }))
+                        }
+                        multiline
+                        minRows={2}
+                        placeholder="Optional"
+                      />
+
+                      <Box sx={{ display: "flex", gap: 1 }}>
+                        <Button
+                          variant="contained"
+                          onClick={handleSaveCustomerCommission}
+                        >
+                          Save Commission
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          color="error"
+                          onClick={handleRemoveCustomerCommission}
+                          disabled={!commissionEntry}
+                        >
+                          Remove
+                        </Button>
+                        <Box sx={{ flex: 1 }} />
+                        <Typography variant="caption" color="text.secondary">
+                          Agent: {commissionAgent?.name || "—"}
+                        </Typography>
+                      </Box>
+                    </Box>
+                  )}
+                </Paper>
+              )}
+            </TabPanel>
+
             <TabPanel value={tabValue} index={3}>
               {!selectedCustomer ? (
                 <Typography
@@ -1320,32 +1638,30 @@ const Customers = () => {
                   {/* Add Base Rate Form */}
                   <Paper sx={{ p: 2, mb: 3, bgcolor: "grey.50" }}>
                     <Typography variant="subtitle2" gutterBottom>
-                      Add New Rate
+                    Add New Base Rate (44" Benchmark)
                     </Typography>
                     <Grid container spacing={2} alignItems="center">
                       <Grid item xs={12} sm={6}>
                         <Autocomplete
-                          value={selectedSku}
+                          value={selectedProduct}
                           onChange={(event, newValue) => {
-                            setSelectedSku(newValue);
+                            setSelectedProduct(newValue);
                             setBaseRateValue("");
                           }}
-                          options={availableSkus}
-                          getOptionLabel={(option) => option.skuCode || ""}
+                          options={availableProducts}
+                          getOptionLabel={(option) =>
+                            option.productCode || option.productAlias || ""
+                          }
                           filterOptions={(options, { inputValue }) => {
                             const search = inputValue.toLowerCase().trim();
                             if (!search) return options;
                             return options.filter((option) => {
-                              const product = option.productId;
                               const searchableFields = [
-                                option.skuCode,
-                                option.skuAlias,
-                                String(option.widthInches),
-                                product?.productCode,
-                                product?.productAlias,
-                                product?.categoryId?.name,
-                                product?.gsmId?.name,
-                                product?.qualityId?.name,
+                                option.productCode,
+                                option.productAlias,
+                                option?.categoryId?.name,
+                                option?.gsmId?.name,
+                                option?.qualityId?.name,
                               ];
                               return searchableFields.some(
                                 (field) =>
@@ -1355,14 +1671,14 @@ const Customers = () => {
                           }}
                           renderOption={(props, option) => (
                             <li {...props} key={option._id}>
-                              {option.skuCode}
+                              {option.productCode || option.productAlias || option._id}
                             </li>
                           )}
                           renderInput={(params) => (
                             <TextField
                               {...params}
                               label="Select Product"
-                              placeholder="Search by SKU, width, category..."
+                              placeholder="Search by product code/alias, category..."
                               size="small"
                             />
                           )}
@@ -1370,9 +1686,9 @@ const Customers = () => {
                             option._id === value._id
                           }
                           noOptionsText={
-                            customerBaseRates.length === skus.length
-                              ? "All SKUs have rates configured"
-                              : "No matching SKUs"
+                            customerBaseRates.length === products.length
+                              ? "All products have rates configured"
+                              : "No matching products"
                           }
                         />
                       </Grid>
@@ -1398,7 +1714,7 @@ const Customers = () => {
                           variant="contained"
                           startIcon={<AddIcon />}
                           onClick={handleAddBaseRate}
-                          disabled={!selectedSku || !baseRateValue}
+                          disabled={!selectedProduct || !baseRateValue}
                         >
                           Add
                         </Button>
@@ -1415,7 +1731,7 @@ const Customers = () => {
                       mb: 1,
                     }}
                   >
-                    <Typography variant="subtitle2">Existing Rates</Typography>
+                    <Typography variant="subtitle2">Existing Base Rates</Typography>
                     <Tooltip title="View Full Rate History">
                       <IconButton
                         size="small"
@@ -1445,7 +1761,6 @@ const Customers = () => {
                       <Table size="small" stickyHeader>
                         <TableHead>
                           <TableRow>
-                            <TableCell>SKU Code</TableCell>
                             <TableCell>Product</TableCell>
                             <TableCell align="right">Rate (₹)</TableCell>
                             <TableCell align="center">Actions</TableCell>
@@ -1453,13 +1768,13 @@ const Customers = () => {
                         </TableHead>
                         <TableBody>
                           {customerBaseRates.map((rate) => {
-                            const sku = rate.skuId;
-                            const product = sku?.productId;
+                            const product = rate.productId;
                             return (
                               <TableRow key={rate._id} hover>
-                                <TableCell>{sku?.skuCode || "-"}</TableCell>
                                 <TableCell>
-                                  {product?.productCode || "-"}
+                                  {product?.productCode ||
+                                    product?.productAlias ||
+                                    "-"}
                                 </TableCell>
                                 <TableCell align="right">
                                   {rate?.baseRate?.toLocaleString("en-IN") || "-"}
@@ -1470,7 +1785,7 @@ const Customers = () => {
                                       size="small"
                                       color="primary"
                                       onClick={() =>
-                                        handleViewRateHistory(sku?._id, sku)
+                                        handleViewRateHistory(product?._id, product)
                                       }
                                     >
                                       <HistoryIcon fontSize="small" />
@@ -1487,7 +1802,7 @@ const Customers = () => {
                                     size="small"
                                     color="error"
                                     onClick={() =>
-                                      handleDeleteBaseRate(sku?._id)
+                                      handleDeleteBaseRate(product?._id)
                                     }
                                   >
                                     <DeleteIcon fontSize="small" />
@@ -1589,8 +1904,8 @@ const Customers = () => {
         <DialogTitle>
           Rate History — {selectedCustomer?.companyName || "Customer"}
           {rateHistorySku
-            ? ` / ${rateHistorySku.skuCode || rateHistorySku.skuAlias}`
-            : " (All SKUs)"}
+            ? ` / ${rateHistorySku.productCode || rateHistorySku.productAlias}`
+            : " (All Products)"}
         </DialogTitle>
         <DialogContent>
           {loadingRateHistory ? (
@@ -1610,7 +1925,6 @@ const Customers = () => {
                 <TableHead>
                   <TableRow>
                     <TableCell>Date</TableCell>
-                    <TableCell>SKU Code</TableCell>
                     <TableCell>Product</TableCell>
                     <TableCell align="right">Rate (₹)</TableCell>
                     <TableCell>Notes</TableCell>
@@ -1620,13 +1934,13 @@ const Customers = () => {
                 </TableHead>
                 <TableBody>
                   {rateHistory.map((entry, index) => {
-                    const sku = entry.skuId;
-                    const product = sku?.productId;
+                    const product = entry.productId;
                     return (
                       <TableRow key={index}>
                         <TableCell>{formatDate(entry.createdAt)}</TableCell>
-                        <TableCell>{sku?.skuCode || "—"}</TableCell>
-                        <TableCell>{product?.productCode || "—"}</TableCell>
+                        <TableCell>
+                          {product?.productCode || product?.productAlias || "—"}
+                        </TableCell>
                         <TableCell align="right">
                           {entry.baseRate?.toLocaleString("en-IN") || "—"}
                         </TableCell>
@@ -1664,7 +1978,12 @@ const Customers = () => {
           {editingRate && (
             <Box sx={{ pt: 1 }}>
               <Typography variant="body2" color="text.secondary" gutterBottom>
-                SKU: <strong>{editingRate.skuId?.skuCode}</strong>
+              Product:{" "}
+              <strong>
+                {editingRate.productId?.productCode ||
+                  editingRate.productId?.productAlias ||
+                  "—"}
+              </strong>
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
                 Current Rate:{" "}
@@ -1768,3 +2087,4 @@ const Customers = () => {
 };
 
 export default Customers;
+

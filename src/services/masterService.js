@@ -262,9 +262,9 @@ const masterService = {
     return res.data || [];
   },
 
-  upsertSupplierBaseRate: async (supplierId, skuId, rate) => {
+  upsertSupplierBaseRate: async (supplierId, productId, rate) => {
     const res = await api.post(`/suppliers/${supplierId}/base-rates`, {
-      skuId,
+      productId,
       rate,
     });
     return res.data || res;
@@ -344,6 +344,16 @@ const masterService = {
     return res.data || res; // Returns customer data
   },
 
+  getCustomerSalesSummary: async (id) => {
+    const res = await api.get(`/customers/${id}/sales-summary`);
+    return res.data?.data || res.data || res;
+  },
+
+  getCustomerSalesSummaryBulk: async (customerIds = []) => {
+    const res = await api.post(`/customers/sales-summary`, { customerIds });
+    return res.data?.data || res.data || [];
+  },
+
   createCustomer: async (data) => {
     const res = await api.post("/customers", data);
     return res.data || res;
@@ -397,8 +407,8 @@ const masterService = {
     return res.data || res;
   },
 
-  deleteCustomerRate: async (customerId, skuId) => {
-    const res = await api.delete(`/customers/${customerId}/rates/${skuId}`);
+  deleteCustomerRate: async (customerId, productId) => {
+    const res = await api.delete(`/customers/${customerId}/rates/${productId}`);
     return res.data || res;
   },
 
@@ -409,9 +419,9 @@ const masterService = {
     return res.data;
   },
 
-  getCustomerRateHistory: async (customerId, skuId = null, limit = 50) => {
+  getCustomerRateHistory: async (customerId, productId = null, limit = 50) => {
     const params = { limit };
-    if (skuId) params.skuId = skuId;
+    if (productId) params.productId = productId;
     const res = await api.get(`/customers/${customerId}/rate-history`, {
       params,
     });
@@ -476,9 +486,9 @@ const masterService = {
     return res.data || res;
   },
 
-  getAgentRateHistory: async (agentId, skuId = null, limit = 50) => {
+  getAgentRateHistory: async (agentId, productId = null, limit = 50) => {
     const params = { limit };
-    if (skuId) params.skuId = skuId;
+    if (productId) params.productId = productId;
     const res = await api.get(`/agents/${agentId}/rate-history`, {
       params,
     });

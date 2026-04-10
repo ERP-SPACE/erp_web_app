@@ -23,7 +23,6 @@ import {
   Divider,
   Alert,
   Tooltip,
-  InputBase,
   Stack,
 } from "@mui/material";
 import { DatePicker } from "@mui/x-date-pickers";
@@ -70,9 +69,14 @@ const SalesOrders = () => {
   const [customerRates, setCustomerRates] = useState([]);
   const [addingRateForLine, setAddingRateForLine] = useState(null);
   const [newRateValue, setNewRateValue] = useState("");
+  const [showDueDaysEditor, setShowDueDaysEditor] = useState(false);
   const customerOptions = customers.map((customer) => ({
     value: customer._id,
-    label: `${customer.companyName || customer.customerCode || "Customer"} (${customer.customerCode || "N/A"})`,
+    label: customer.creditPolicy?.isBlocked 
+      ? `${customer.companyName || customer.customerCode || "Customer"} (${customer.customerCode || "N/A"}) - BLOCKED`
+      : `${customer.companyName || customer.customerCode || "Customer"} (${customer.customerCode || "N/A"})`,
+    isBlocked: customer.creditPolicy?.isBlocked || false,
+    blockReason: customer.creditPolicy?.blockReason,
   }));
   const skuOptions = [
     { value: "", label: "Select" },
@@ -110,6 +114,8 @@ const SalesOrders = () => {
         },
       ],
       discountPercent: 0,
+      creditDays: 0,
+      graceDays: 0,
       dueDays: 0,
       notes: "",
     },
@@ -175,6 +181,8 @@ const SalesOrders = () => {
   const watchCustomerId = watch("customerId");
   const watchLines = watch("lines");
   const watchDiscountPercent = watch("discountPercent");
+  const watchCreditDays = watch("creditDays");
+  const watchGraceDays = watch("graceDays");
 
   const pendingLimit = useMemo(() => {
     const limit =
@@ -198,14 +206,20 @@ const SalesOrders = () => {
       checkCustomerCredit(watchCustomerId);
       fetchCustomerRates(watchCustomerId);
       if (!skipDueDaysAutoSetRef.current) {
-        const days =
-          (customer?.creditPolicy?.creditDays || 0) +
-          (customer?.creditPolicy?.graceDays || 0);
-        setValue("dueDays", days);
+        const creditDays = customer?.creditPolicy?.creditDays || 0;
+        const graceDays = customer?.creditPolicy?.graceDays || 0;
+        setValue("creditDays", creditDays);
+        setValue("graceDays", graceDays);
+        setValue("dueDays", creditDays + graceDays);
       }
       skipDueDaysAutoSetRef.current = false;
+      setShowDueDaysEditor(false);
     }
   }, [watchCustomerId, customers]);
+
+  useEffect(() => {
+    setValue("dueDays", toNumber(watchCreditDays) + toNumber(watchGraceDays));
+  }, [watchCreditDays, watchGraceDays, setValue, toNumber]);
 
   const fetchSalesOrders = async () => {
     setLoading(true);
@@ -251,8 +265,9 @@ const SalesOrders = () => {
 
   const fetchCustomerRates = async (customerId) => {
     try {
-      const rates = await masterService.getCustomerRates(customerId);
-      setCustomerRates(Array.isArray(rates) ? rates : []);
+      const res = await masterService.getCustomerRates(customerId);
+      const rates = Array.isArray(res) ? res : res?.data || [];
+      setCustomerRates(rates);
     } catch (error) {
       console.error("Failed to fetch customer rates:", error);
       setCustomerRates([]);
@@ -267,39 +282,76 @@ const SalesOrders = () => {
     return map;
   }, [skus]);
 
-  // Find the SKU-specific rate for a line directly by skuId.
-  const findRateForSku = useCallback(
-    (skuId) => {
-      const id = String(normalizeId(skuId) || "");
+  // Find the Product-specific rate for a line by productId.
+  const findRateForProduct = useCallback(
+    (productId) => {
+      const id = String(normalizeId(productId) || "");
       if (!id || !customerRates.length) return null;
-      return customerRates.find((r) => {
-        const rateSkuId = String(normalizeId(r.skuId?._id ?? r.skuId) || "");
-        return rateSkuId === id;
-      }) || null;
+      return (
+        customerRates.find((r) => {
+          const rateProductId = String(
+            normalizeId(r.productId?._id ?? r.productId) || ""
+          );
+          return rateProductId === id;
+        }) || null
+      );
     },
     [customerRates, normalizeId]
   );
 
-  const getLineBaseRate = useCallback(
+  const getBenchmarkRateForLine = useCallback(
     (line) => {
-      const match = findRateForSku(line?.skuId);
-      if (match) return toNumber(match.baseRate);
-      return toNumber(selectedCustomer?.baseRate44);
+      const selectedSku = skuById[normalizeId(line?.skuId)];
+      const productId = normalizeId(selectedSku?.productId);
+      if (!productId) return null;
+      return findRateForProduct(productId);
     },
-    [findRateForSku, toNumber, selectedCustomer]
+    [findRateForProduct, normalizeId, skuById]
   );
 
-  // Returns the customerRate record for this line's SKU, or null.
+  const calculateWidthDerivedRate = useCallback(
+    (benchmarkRate44, widthInches) => {
+      const benchmarkRate = toNumber(benchmarkRate44);
+      const width = toNumber(widthInches);
+
+      if (!benchmarkRate || !width) {
+        return 0;
+      }
+
+      return Math.round((benchmarkRate * (width / 44) + Number.EPSILON) * 100) / 100;
+    },
+    [toNumber]
+  );
+
+  const getLineBaseRate = useCallback(
+    (line) => {
+      const benchmarkRate = getBenchmarkRateForLine(line);
+      const benchmarkRate44 = benchmarkRate?.baseRate ?? 0;
+      const widthInches =
+        line?.widthInches || skuById[normalizeId(line?.skuId)]?.widthInches || 0;
+
+      return calculateWidthDerivedRate(benchmarkRate44, widthInches);
+    },
+    [
+      calculateWidthDerivedRate,
+      getBenchmarkRateForLine,
+      normalizeId,
+      skuById,
+    ]
+  );
+
+  // Returns the 44" benchmark customerRate record that drives this line, or null.
   const getSkuRateMatch = useCallback(
-    (line) => findRateForSku(line?.skuId),
-    [findRateForSku]
+    (line) => getBenchmarkRateForLine(line),
+    [getBenchmarkRateForLine]
   );
 
   const handleSaveSkuRate = useCallback(
     async (lineIndex) => {
       const line = watchLines[lineIndex];
-      const skuId = normalizeId(line?.skuId);
-      if (!skuId || !selectedCustomer) return;
+      const selectedSku = skuById[normalizeId(line?.skuId)];
+      const productId = normalizeId(selectedSku?.productId);
+      if (!productId || !selectedCustomer) return;
       const rate = Number(newRateValue);
       if (!rate || rate <= 0) {
         showNotification("Please enter a valid rate", "warning");
@@ -307,10 +359,10 @@ const SalesOrders = () => {
       }
       try {
         await masterService.setCustomerRate(selectedCustomer._id, {
-          skuId,
+          productId,
           baseRate: rate,
         });
-        showNotification("Base rate added successfully", "success");
+        showNotification('44" benchmark rate added successfully', "success");
         await fetchCustomerRates(selectedCustomer._id);
         setAddingRateForLine(null);
         setNewRateValue("");
@@ -318,7 +370,15 @@ const SalesOrders = () => {
         showNotification(err?.message || "Failed to save rate", "error");
       }
     },
-    [watchLines, selectedCustomer, newRateValue, fetchCustomerRates, normalizeId, showNotification]
+    [
+      watchLines,
+      selectedCustomer,
+      newRateValue,
+      fetchCustomerRates,
+      normalizeId,
+      showNotification,
+      skuById,
+    ]
   );
 
   const resolveTaxRate = useCallback(
@@ -329,8 +389,8 @@ const SalesOrders = () => {
     [skuById, normalizeId, normalizeTaxRate]
   );
 
-  // Calculate pricing for a single line.
-  // With SKU-based rates the baseRate is already width-specific — no further scaling needed.
+  // Sales pricing is derived from the product's 44" benchmark rate.
+  // For example, 24" uses: rate44 * (24 / 44).
   const calculateLinePrice = useCallback(
     (line, baseRate, discountPercent) => {
       const rate = toNumber(baseRate);
@@ -446,6 +506,8 @@ const SalesOrders = () => {
     reset({
       customerId: normalizeId(row.customerId),
       date: new Date(row.date),
+      creditDays: customer?.creditPolicy?.creditDays || 0,
+      graceDays: customer?.creditPolicy?.graceDays || 0,
       dueDays:
         row.dueDays ??
         (customer?.creditPolicy?.creditDays || 0) +
@@ -464,6 +526,7 @@ const SalesOrders = () => {
       discountPercent: row.discountPercent || 0,
       notes: row.notes || "",
     });
+    setShowDueDaysEditor(false);
     setOpenDialog(true);
   };
 
@@ -476,6 +539,8 @@ const SalesOrders = () => {
     reset({
       customerId: "",
       date: new Date(),
+      creditDays: 0,
+      graceDays: 0,
       dueDays: 0,
       lines: [
         normalizeLine({
@@ -493,6 +558,7 @@ const SalesOrders = () => {
       discountPercent: 0,
       notes: "",
     });
+    setShowDueDaysEditor(false);
     setOpenDialog(true);
   };
 
@@ -510,6 +576,8 @@ const SalesOrders = () => {
     reset({
       customerId: normalizeId(row.customerId),
       date: new Date(row.date),
+      creditDays: editCustomer?.creditPolicy?.creditDays || 0,
+      graceDays: editCustomer?.creditPolicy?.graceDays || 0,
       dueDays:
         row.dueDays ??
         (editCustomer?.creditPolicy?.creditDays || 0) +
@@ -528,6 +596,7 @@ const SalesOrders = () => {
       discountPercent: row.discountPercent || 0,
       notes: row.notes || "",
     });
+    setShowDueDaysEditor(false);
     setOpenDialog(true);
   };
 
@@ -713,6 +782,8 @@ const SalesOrders = () => {
         creditCheckPassed: !creditCheckResult?.blocked,
         creditCheckNotes: creditCheckResult?.reasons?.join("; "),
       };
+      delete orderData.creditDays;
+      delete orderData.graceDays;
 
       if (selectedOrder) {
         await salesService.updateSalesOrder(selectedOrder._id, orderData);
@@ -859,6 +930,22 @@ const SalesOrders = () => {
                         fullWidth
                         size="small"
                         disabled={viewMode}
+                        getOptionDisabled={(option) => option.isBlocked}
+                        renderOption={(props, option) => (
+                          <Box component="li" {...props}>
+                            <Stack direction="row" spacing={1} alignItems="center" sx={{ width: "100%" }}>
+                              <span>{option.label}</span>
+                              {option.isBlocked && (
+                                <Chip
+                                  label="BLOCKED"
+                                  size="small"
+                                  color="error"
+                                  variant="outlined"
+                                />
+                              )}
+                            </Stack>
+                          </Box>
+                        )}
                         renderInput={(params) => (
                           <TextField
                             {...params}
@@ -945,36 +1032,60 @@ const SalesOrders = () => {
                               {watch("dueDays") ?? 0} days
                             </Typography>
                           ) : (
-                            <Controller
-                              name="dueDays"
-                              control={control}
-                              render={({ field }) => (
-                                <Stack direction="row" alignItems="baseline" spacing={0.5}>
-                                  <InputBase
-                                    {...field}
-                                    type="number"
-                                    inputProps={{ min: 0 }}
-                                    onChange={(e) =>
-                                      field.onChange(Number(e.target.value))
-                                    }
-                                    sx={{
-                                      width: 44,
-                                      "& input": {
-                                        p: 0,
-                                        fontSize: "0.875rem",
-                                        fontWeight: 500,
-                                        color: "text.primary",
-                                        borderBottom: "1px solid",
-                                        borderColor: "text.disabled",
-                                      },
-                                    }}
+                            <Stack spacing={1}>
+                              <Stack
+                                direction="row"
+                                alignItems="baseline"
+                                spacing={0.5}
+                                onClick={() => setShowDueDaysEditor((prev) => !prev)}
+                                sx={{ cursor: "pointer", width: "fit-content" }}
+                              >
+                                <Typography variant="body2" fontWeight={500}>
+                                  {watch("dueDays") ?? 0}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                  days
+                                </Typography>
+                              </Stack>
+                              {showDueDaysEditor && (
+                                <Stack direction="row" spacing={1}>
+                                  <Controller
+                                    name="creditDays"
+                                    control={control}
+                                    render={({ field }) => (
+                                      <TextField
+                                        {...field}
+                                        label="Credit Days"
+                                        type="number"
+                                        size="small"
+                                        inputProps={{ min: 0 }}
+                                        onChange={(e) =>
+                                          field.onChange(Number(e.target.value))
+                                        }
+                                        sx={{ width: 120 }}
+                                      />
+                                    )}
                                   />
-                                  <Typography variant="body2" color="text.secondary">
-                                    days
-                                  </Typography>
+                                  <Controller
+                                    name="graceDays"
+                                    control={control}
+                                    render={({ field }) => (
+                                      <TextField
+                                        {...field}
+                                        label="Grace Days"
+                                        type="number"
+                                        size="small"
+                                        inputProps={{ min: 0 }}
+                                        onChange={(e) =>
+                                          field.onChange(Number(e.target.value))
+                                        }
+                                        sx={{ width: 120 }}
+                                      />
+                                    )}
+                                  />
                                 </Stack>
                               )}
-                            />
+                            </Stack>
                           )}
                         </Grid>
                       </Grid>
@@ -1014,14 +1125,14 @@ const SalesOrders = () => {
                 >
                   <Box sx={{ px: 2, py: 1, bgcolor: "grey.50", borderBottom: "1px solid", borderColor: "divider" }}>
                     <Typography variant="caption" fontWeight={600} color="text.secondary" sx={{ textTransform: "uppercase", letterSpacing: 0.5 }}>
-                      SKU Base Rates
+                      Product Base Rates
                     </Typography>
                   </Box>
                   <TableContainer sx={{ maxHeight: 220, overflow: "auto", flex: 1 }}>
                     <Table size="small" stickyHeader>
                       <TableHead>
                         <TableRow>
-                          <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }}>SKU</TableCell>
+                          <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }}>Product</TableCell>
                           <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }} align="right">Base Rate</TableCell>
                         </TableRow>
                       </TableHead>
@@ -1038,8 +1149,8 @@ const SalesOrders = () => {
                           customerRates.map((rate) => (
                             <TableRow key={rate._id} hover>
                               <TableCell>
-                                {rate.skuId?.skuCode ||
-                                  rate.skuId?.skuAlias ||
+                                {rate.productId?.productCode ||
+                                  rate.productId?.productAlias ||
                                   "—"}
                               </TableCell>
                               <TableCell align="right">
@@ -1176,7 +1287,7 @@ const SalesOrders = () => {
                                 sx={{ width: 80 }}
                                 inputProps={{ min: 0, step: "any" }}
                               />
-                              <Tooltip title="Save rate">
+                              <Tooltip title='Save 44" benchmark rate'>
                                 <IconButton size="small" color="primary" onClick={() => handleSaveSkuRate(index)}>
                                   <SaveIcon fontSize="small" />
                                 </IconButton>
@@ -1188,7 +1299,7 @@ const SalesOrders = () => {
                               </Tooltip>
                             </Stack>
                           ) : (
-                            <Tooltip title="No SKU rate found. Click to add.">
+                            <Tooltip title='No 44" benchmark rate found for this product. Click to add one.'>
                               <Box
                                 sx={{ display: "flex", alignItems: "center", gap: 0.5, cursor: viewMode ? "default" : "pointer" }}
                                 onClick={() => {
@@ -1197,7 +1308,7 @@ const SalesOrders = () => {
                               >
                                 <WarningIcon sx={{ fontSize: 14, color: "warning.main" }} />
                                 <Typography variant="caption" color="warning.main">
-                                  {viewMode ? "No rate" : "Add rate"}
+                                  {viewMode ? 'No 44" rate' : 'Add 44" rate'}
                                 </Typography>
                               </Box>
                             </Tooltip>

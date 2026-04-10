@@ -64,8 +64,8 @@ const pricingService = {
   },
 
   // Rate Calculator Helper
-  calculateWidthRate: (baseRate44, widthInches) => {
-    return Math.round(baseRate44 * (widthInches / 44));
+  calculateWidthRate: (benchmarkRate44, widthInches) => {
+    return Math.round(benchmarkRate44 * (widthInches / 44));
   },
 
   // Format Price for Display

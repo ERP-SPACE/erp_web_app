@@ -328,8 +328,8 @@ const Products = () => {
 
   const columns = [
     { field: "categoryName", headerName: "Category" },
-    { field: "gsmName", headerName: "GSM" },
     { field: "qualityName", headerName: "Quality" },
+    { field: "gsmName", headerName: "GSM" },
     { field: "productCode", headerName: "Product Code" },
     { field: "productAlias", headerName: "Product Alias" },
     { field: "hsnCode", headerName: "HSN Code" },

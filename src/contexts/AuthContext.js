@@ -3,34 +3,49 @@ import authService from "../services/authService";
 import { useApp } from "./AppContext";
 
 const AuthContext = createContext();
+const ACCESS_TOKEN_KEY = "erp_token";
+const REFRESH_TOKEN_KEY = "erp_refresh_token";
+const USER_KEY = "erp_user";
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(() => {
-    const stored = localStorage.getItem("erp_user");
+    const stored = localStorage.getItem(USER_KEY);
     return stored ? JSON.parse(stored) : null;
   });
-  const [token, setToken] = useState(() => localStorage.getItem("erp_token"));
+  const [token, setToken] = useState(() => localStorage.getItem(ACCESS_TOKEN_KEY));
+  const [refreshToken, setRefreshToken] = useState(() =>
+    localStorage.getItem(REFRESH_TOKEN_KEY)
+  );
   const { showNotification } = useApp();
 
   useEffect(() => {
     if (token) {
-      localStorage.setItem("erp_token", token);
+      localStorage.setItem(ACCESS_TOKEN_KEY, token);
     } else {
-      localStorage.removeItem("erp_token");
+      localStorage.removeItem(ACCESS_TOKEN_KEY);
     }
   }, [token]);
 
   useEffect(() => {
-    if (user) {
-      localStorage.setItem("erp_user", JSON.stringify(user));
+    if (refreshToken) {
+      localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
     } else {
-      localStorage.removeItem("erp_user");
+      localStorage.removeItem(REFRESH_TOKEN_KEY);
+    }
+  }, [refreshToken]);
+
+  useEffect(() => {
+    if (user) {
+      localStorage.setItem(USER_KEY, JSON.stringify(user));
+    } else {
+      localStorage.removeItem(USER_KEY);
     }
   }, [user]);
 
   const handleAuthSuccess = useCallback(
-    ({ token: tk, user: usr }) => {
-      setToken(tk);
+    ({ token: tk, accessToken, refreshToken: nextRefreshToken, user: usr }) => {
+      setToken(accessToken || tk);
+      setRefreshToken(nextRefreshToken || null);
       setUser(usr);
       showNotification("Signed in successfully", "success");
     },
@@ -55,23 +70,42 @@ export const AuthProvider = ({ children }) => {
     [handleAuthSuccess]
   );
 
-  const logout = useCallback((message = "Logged out") => {
+  const clearAuthState = useCallback((message = "Logged out") => {
     setToken(null);
+    setRefreshToken(null);
     setUser(null);
     showNotification(message, "info");
   }, [showNotification]);
+
+  const logout = useCallback(
+    async (message = "Logged out") => {
+      const currentRefreshToken =
+        localStorage.getItem(REFRESH_TOKEN_KEY) || refreshToken;
+
+      try {
+        if (currentRefreshToken && token) {
+          await authService.logout(currentRefreshToken);
+        }
+      } catch (error) {
+        // Best-effort revocation; still clear local auth state.
+      } finally {
+        clearAuthState(message);
+      }
+    },
+    [clearAuthState, refreshToken, token]
+  );
 
   // When the API signals an expired/invalid token, force a logout so
   // ProtectedRoute automatically redirects the user to /login.
   useEffect(() => {
     const handleSessionExpired = () => {
-      logout("Session expired. Please log in again.");
+      clearAuthState("Session expired. Please log in again.");
     };
     window.addEventListener("erp:auth:expired", handleSessionExpired);
     return () => {
       window.removeEventListener("erp:auth:expired", handleSessionExpired);
     };
-  }, [logout]);
+  }, [clearAuthState]);
 
   const updateProfile = useCallback(
     async (payload) => {
@@ -94,6 +128,7 @@ export const AuthProvider = ({ children }) => {
   const value = {
     user,
     token,
+    refreshToken,
     isAuthenticated: !!token,
     register,
     login,

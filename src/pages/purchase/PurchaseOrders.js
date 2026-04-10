@@ -208,13 +208,17 @@ const PurchaseOrders = () => {
     const supplierId = getValues("supplierId");
     const skuId = getValues(`lines.${lineIndex}.skuId`);
     if (!supplierId || !skuId) return;
+    const sku = skus?.find((s) => s._id === skuId) || null;
+    const productId =
+      sku?.productId?._id || sku?.productId || sku?.product?._id || sku?.product || "";
+    if (!productId) return;
     const rate = Number(newRateValue);
     if (!rate || rate <= 0) {
       showNotification("Please enter a valid rate", "warning");
       return;
     }
     try {
-      await masterService.upsertSupplierBaseRate(supplierId, skuId, rate);
+      await masterService.upsertSupplierBaseRate(supplierId, productId, rate);
       showNotification("Supplier base rate saved successfully", "success");
       await fetchSupplierBaseRates(supplierId);
       // Auto-fill the line with the newly saved rate
@@ -340,12 +344,13 @@ const PurchaseOrders = () => {
     };
   };
 
-  const getSupplierBaseRate = (supplierId, skuId) => {
-    if (!supplierId || !skuId) return undefined;
+  const getSupplierBaseRate = (supplierId, productId) => {
+    if (!supplierId || !productId) return undefined;
 
     const matched = supplierBaseRates.find((br) => {
-      const brSkuId = br.skuId?._id?.toString() || br.skuId?.toString() || "";
-      return brSkuId === skuId.toString();
+      const brProductId =
+        br.productId?._id?.toString() || br.productId?.toString() || "";
+      return brProductId === productId.toString();
     });
 
     if (!matched || matched.rate === undefined) return undefined;
@@ -355,7 +360,9 @@ const PurchaseOrders = () => {
   const applyBaseRateForLine = (index, sku, supplierId) => {
     if (!sku || !supplierId) return;
 
-    const baseRate = getSupplierBaseRate(supplierId, sku._id);
+    const productId =
+      sku?.productId?._id || sku?.productId || sku?.product?._id || sku?.product || "";
+    const baseRate = getSupplierBaseRate(supplierId, productId);
 
     if (baseRate === undefined) return;
 
@@ -678,7 +685,7 @@ const PurchaseOrders = () => {
                     <Table size="small" stickyHeader>
                       <TableHead>
                         <TableRow>
-                          <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }}>SKU</TableCell>
+                          <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }}>Product</TableCell>
                           <TableCell sx={{ fontWeight: 600, bgcolor: "grey.50" }} align="right">Base Rate</TableCell>
                         </TableRow>
                       </TableHead>
@@ -692,13 +699,17 @@ const PurchaseOrders = () => {
                         ) : supplierBaseRates.length === 0 ? (
                           <TableRow>
                             <TableCell colSpan={2} align="center" sx={{ color: "text.disabled", py: 2 }}>
-                              No SKU rates configured for this supplier
+                              No product rates configured for this supplier
                             </TableCell>
                           </TableRow>
                         ) : (
                           supplierBaseRates.map((br) => (
                             <TableRow key={br._id} hover>
-                              <TableCell>{br.skuId?.skuCode || br.skuId?.skuAlias || "—"}</TableCell>
+                              <TableCell>
+                                {br.productId?.productCode ||
+                                  br.productId?.productAlias ||
+                                  "—"}
+                              </TableCell>
                               <TableCell align="right">{formatCurrency(br.rate)}</TableCell>
                             </TableRow>
                           ))
@@ -744,12 +755,25 @@ const PurchaseOrders = () => {
                     /** Manual line: no master SKU — user types category/GSM/quality/width and rate. */
                     const isManualLine = !hasSkuSelected;
                     const supplierSelected = !!getValues("supplierId");
-                    const supplierRate = hasSkuSelected
-                      ? supplierBaseRates.find((br) => {
-                          const brId = br.skuId?._id?.toString() || br.skuId?.toString() || "";
-                          return brId === lineSkuId;
-                        })
+                    const lineSku = hasSkuSelected
+                      ? skus?.find((s) => s._id === lineSkuId) || null
                       : null;
+                    const lineProductId =
+                      lineSku?.productId?._id ||
+                      lineSku?.productId ||
+                      lineSku?.product?._id ||
+                      lineSku?.product ||
+                      "";
+                    const supplierRate =
+                      hasSkuSelected && lineProductId
+                        ? supplierBaseRates.find((br) => {
+                            const brId =
+                              br.productId?._id?.toString() ||
+                              br.productId?.toString() ||
+                              "";
+                            return brId === lineProductId.toString();
+                          })
+                        : null;
                     const hasSupplierRate = !!supplierRate;
 
                     return (
